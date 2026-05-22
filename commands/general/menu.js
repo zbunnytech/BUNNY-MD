@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 export const commandConfig = {
     name: 'menu',
     category: 'general',
-    description: 'Displays the complete system interface panel dynamically categorized with server statistics.'
+    description: 'Displays the complete system interface panel dynamically categorized with server statistic.'
 };
 
 /**
