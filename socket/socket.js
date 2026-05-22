@@ -1,18 +1,35 @@
-import makeWASocket, { 
-    DisconnectReason, 
-    initAuthCreds,
+const {
+    default: makeWASocket,
+    DisconnectReason,
     BufferJSON
-} from '@whiskeysockets/baileys';
-import pino from 'pino';
-import QRCode from 'qrcode';
+} = require("@whiskeysockets/baileys");
+const pino = require("pino");
+const QRCode = require("qrcode");
+
+// Mfumo wa kutengeneza Pristine Credentials kienyeji kwa Baileys ya zamani
+const initAuthCreds = () => {
+    return {
+        noiseKey: Crypto.generateKeyPair(),
+        signedIdentityKey: Crypto.generateKeyPair(),
+        signedPreKey: Crypto.generateKeyPair(),
+        registrationId: Math.floor(Math.random() * 16384) + 1,
+        advSecretKey: Buffer.alloc(32).toString('base64'),
+        nextPreKeyId: 1,
+        firstUnuploadedPreKeyId: 1,
+        accountSettings: { unarchiveChats: false },
+        myAppStateKeyId: null
+    };
+};
+
+// Kwa sababu initAuthCreds haipo direct exported kwenye Baileys ya zamani, tunatumia Crypto au backup ya vitu vya msingi vya Baileys
+const Crypto = require("@whiskeysockets/baileys/lib/Utils/crypto");
 
 /**
  * Binds the WebSocket Routing Engine to the main Express HTTP Server
  * Handles secure connection handshakes, pairing requests, and auto-updating QR codes
- * Fully isolated to operate 100% in local volatile memory (In-Memory Architecture)
- * ZERO database connections utilized for maximum execution speed and standalone deployment
+ * Powered entirely by CommonJS for Bunny MD Architecture
  */
-export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT_CONNECTIONS) {
+function bindSocketRoutingEngine(io, startBotInstance, CLIENT_ID, MAX_BOT_CONNECTIONS) {
 
     io.on('connection', (socket) => {
         console.log(`[Socket Session] New frontend client linked: ${socket.id}`);
@@ -44,10 +61,12 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
                     } catch (_) {}
                 }
 
-                console.log(`[Socket Engine] Initializing WhatsApp instance via [${method}] for Standalone Node session`);
+                console.log(`[Socket Engine] Initializing WhatsApp instance via [${method}] for Standalone Bunny MD Node`);
 
-                // 2. Pure In-Memory Authentication Mappings (Completely independent)
-                const pristineCreds = initAuthCreds();
+                // Pure In-Memory Authentication Mappings (Completely independent init)
+                const { initAuthCreds: baileysInitCreds } = require("@whiskeysockets/baileys/lib/Utils/auth-utils");
+                const pristineCreds = baileysInitCreds ? baileysInitCreds() : initAuthCreds();
+                
                 const ephemeralAuthState = {
                     creds: pristineCreds,
                     keys: {
@@ -75,13 +94,16 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
 
                 // Initialize core parameters utilizing fully hardened browser identity string masks
                 currentSock = makeWASocket({
-                    auth: ephemeralAuthState,
+                    auth: {
+                        creds: ephemeralAuthState.creds,
+                        keys: ephemeralAuthState.keys
+                    },
                     printQRInTerminal: false,
                     logger: pino({ level: 'silent' }),
-                    browser: ['Ubuntu', 'Chrome', '20.0.04']
+                    browser: ['Bunny MD Setup', 'Chrome', '20.0.0']
                 });
 
-                // 3. Request pairing sequence if explicitly specified by user layout choice
+                // Request pairing sequence if explicitly specified by user layout choice
                 if (method === 'pairingCode' && cleanNumber) {
                     setTimeout(async () => {
                         try {
@@ -94,9 +116,8 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
                     }, 3000);
                 }
 
-                // 4. Actively track handshake process changes and intercept confirmation/QR events
                 currentSock.ev.on('creds.update', () => {
-                    // Ephemeral memory engine automatically tracks changes inline during state propagation
+                    // Volatile engine updates state automatically
                 });
 
                 currentSock.ev.on('connection.update', async (update) => {
@@ -107,7 +128,8 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
                         try {
                             console.log(`[Socket Engine] Generating QR Image Matrix for client: ${socket.id}`);
                             const qrImageUrl = await QRCode.toDataURL(qr);
-                            socket.emit('qrCodeResponse', { qr: qrImageUrl });
+                            socket.emit('qr', qrImageUrl); // Classic VEX core bridge broadcast
+                            socket.emit('qrCodeResponse', { qr: qrImageUrl }); // pair.html hook compatibility
                         } catch (qrGenErr) {
                             console.error('[QR Engine Error] Failed to compile matrix to base64 image:', qrGenErr.message);
                         }
@@ -119,20 +141,21 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
 
                         console.log(`[Handshake Success] ${authenticatedNumber} safely authenticated 100% in memory!`);
 
-                        // COMPACT BASE64 BLOCK SYNC - Ready to be passed to runtime memory state
+                        // COMPACT BASE64 BLOCK SYNC
                         const cloudPackData = JSON.stringify(ephemeralAuthState.creds, BufferJSON.replacer);
 
                         // Broadcast success event confirmation back to UI layers
+                        socket.emit('connected'); // Classic VEX broadcast
                         socket.emit('pairingSuccess', { 
                             message: 'Bunny MD connected successfully! Check your WhatsApp chat for initialization reports.',
-                            sessionCreds: cloudPackData // Sent back to frontend if needed, or injected locally
+                            sessionCreds: cloudPackData
                         });
 
                         // Kill local registration listeners and pass execution tasks over to main index process cluster loop
                         currentSock.ev.removeAllListeners('connection.update');
                         currentSock = null;
                         
-                        // Pass to index.js memory loop directly with credentials included
+                        // Pass to index.js main engine runner directly with credentials included
                         await startBotInstance(finalBotId, true, ephemeralAuthState.creds);
                     }
 
@@ -140,7 +163,6 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
                         const reason = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode;
                         console.log(`[Socket Engine Connection] Registration lifecycle closed. Reason code: ${reason}`);
 
-                        // Safe hot-restart mitigation layer preserving internal state flow
                         if (reason === 515 || reason === DisconnectReason.restartRequired) {
                             console.log(`[Socket Engine Balance] Internal hot-restart signaled by WhatsApp network. Keeping stream pipeline warm.`);
                             return; 
@@ -162,10 +184,13 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
         socket.on('disconnect', () => {
             console.log(`[Socket Session] Client socket pipeline disconnected: ${socket.id}`);
             if (currentSock) {
-                currentSock.ev.removeAllListeners('connection.update');
+                try {
+                    currentSock.ev.removeAllListeners('connection.update');
+                } catch (_) {}
                 currentSock = null;
             }
         });
     });
-                        }
-            
+}
+
+module.exports = { bindSocketRoutingEngine };
