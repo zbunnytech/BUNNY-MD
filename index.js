@@ -42,31 +42,59 @@ app.get('/pair', (req, res) => {
 });
 
 /**
- * Custom Remote Authentication state builder for Supabase DB
- * Maps Baileys credentials dynamically without leveraging Render local storage disk space
- * Optimised with high-speed bulk string-serialization to eliminate 'Couldn't link device' timeouts
+ * Highly Stable Hybrid Authentication state builder for Supabase DB
+ * Isolates critical credentials to the Cloud while utilizing In-Memory storage for temporary keys
+ * This eliminates 'Couldn't link device' errors by removing database transactional bottlenecks during pairing
  */
 async function getRemoteAuthState(serverId, botId) {
+    // In-Memory fallback store for high-frequency temporary pre-keys
+    const memoryKeyStore = {};
+
+    // Fetch master credentials directly from Supabase text repository
+    let masterCreds = {};
+    try {
+        const { data: res } = await supabase
+            .from('bot_sessions')
+            .select('session_data')
+            .eq('server_id', serverId)
+            .eq('bot_id', botId)
+            .eq('session_key', 'master_creds')
+            .single();
+
+        if (res && res.session_data) {
+            masterCreds = JSON.parse(res.session_data);
+        }
+    } catch {
+        console.log(`[Auth Profile] Generating pristine session mappings for Node: ${botId}`);
+    }
+
     return {
         state: {
-            creds: {}, // Will be populated dynamically via Baileys internal auth handlers
+            creds: masterCreds,
             keys: {
                 get: async (type, ids) => {
                     const data = {};
                     for (const id of ids) {
-                        const { data: res } = await supabase
-                            .from('bot_sessions')
-                            .select('session_data')
-                            .eq('server_id', serverId)
-                            .eq('bot_id', botId)
-                            .eq('session_key', `${type}-${id}`)
-                            .single();
-                        
-                        if (res && res.session_data) {
+                        const storeKey = `${type}-${id}`;
+                        if (memoryKeyStore[storeKey]) {
+                            data[id] = memoryKeyStore[storeKey];
+                        } else {
+                            // Secondary fallback check to cloud if memory is clear
                             try {
-                                data[id] = JSON.parse(res.session_data);
+                                const { data: res } = await supabase
+                                    .from('bot_sessions')
+                                    .select('session_data')
+                                    .eq('server_id', serverId)
+                                    .eq('bot_id', botId)
+                                    .eq('session_key', storeKey)
+                                    .single();
+                                
+                                if (res && res.session_data) {
+                                    data[id] = JSON.parse(res.session_data);
+                                    memoryKeyStore[storeKey] = data[id]; // Cache it
+                                }
                             } catch {
-                                data[id] = res.session_data; 
+                                // Key not initialized yet
                             }
                         }
                     }
@@ -78,28 +106,32 @@ async function getRemoteAuthState(serverId, botId) {
                     for (const type in data) {
                         for (const id in data[type]) {
                             const value = data[type][id];
-                            const sessionKey = `${type}-${id}`;
+                            const storeKey = `${type}-${id}`;
 
                             if (value === null) {
+                                delete memoryKeyStore[storeKey];
                                 await supabase
                                     .from('bot_sessions')
                                     .delete()
                                     .eq('server_id', serverId)
                                     .eq('bot_id', botId)
-                                    .eq('session_key', sessionKey);
+                                    .eq('session_key', storeKey);
                             } else {
-                                const serializedValue = typeof value === 'object' ? JSON.stringify(value) : value;
-                                batchUpsertRecords.push({
-                                    server_id: serverId,
-                                    bot_id: botId,
-                                    session_key: sessionKey,
-                                    session_data: serializedValue
-                                });
+                                memoryKeyStore[storeKey] = value;
+                                
+                                // Only backup critical keys to the cloud to prevent network degradation timeouts
+                                if (type === 'app-state-sync-key' || type === 'session') {
+                                    batchUpsertRecords.push({
+                                        server_id: serverId,
+                                        bot_id: botId,
+                                        session_key: storeKey,
+                                        session_data: JSON.stringify(value)
+                                    });
+                                }
                             }
                         }
                     }
 
-                    // Execute bulk single-trip upsert pipeline to completely prevent transaction latency bottlenecks
                     if (batchUpsertRecords.length > 0) {
                         await supabase
                             .from('bot_sessions')
@@ -109,14 +141,13 @@ async function getRemoteAuthState(serverId, botId) {
             }
         },
         saveCreds: async (creds) => {
-            const serializedCreds = typeof creds === 'object' ? JSON.stringify(creds) : creds;
             await supabase
                 .from('bot_sessions')
                 .upsert({
                     server_id: serverId,
                     bot_id: botId,
-                    session_key: 'creds',
-                    session_data: serializedCreds
+                    session_key: 'master_creds',
+                    session_data: JSON.stringify(creds)
                 });
         }
     };
@@ -133,7 +164,7 @@ async function startBotInstance(botId, isNewConnection = false) {
 
     console.log(`[System] Initializing WhatsApp Client for ID: ${botId}...`);
 
-    // Custom database authentication loading
+    // Load optimized hybrid authentication maps
     const remoteAuth = await getRemoteAuthState(SERVER_ID, botId);
 
     // Pull existing database configuration details or initialize defaults safely
@@ -153,23 +184,6 @@ async function startBotInstance(botId, isNewConnection = false) {
         config = newConfig;
     }
 
-    // Try loading saved root credentials from Supabase before initializing socket stream
-    try {
-        const { data: savedCredsRecord } = await supabase
-            .from('bot_sessions')
-            .select('session_data')
-            .eq('server_id', SERVER_ID)
-            .eq('bot_id', botId)
-            .eq('session_key', 'creds')
-            .single();
-
-        if (savedCredsRecord && savedCredsRecord.session_data) {
-            remoteAuth.state.creds = JSON.parse(savedCredsRecord.session_data);
-        }
-    } catch (credsFetchError) {
-        console.log(`[Auth Boot] No initial credentials mapping located for ${botId}. Generating new keys.`);
-    }
-
     // Initialize Baileys connection profile explicitly utilizing v7.0.0-rc11 parameters with full desktop masquerade
     const sock = makeWASocket({
         auth: {
@@ -187,9 +201,8 @@ async function startBotInstance(botId, isNewConnection = false) {
     const routerPath = path.join(__dirname, 'lib', 'router.js');
     const cachePath = path.join(__dirname, 'lib', 'cache.js');
 
-    sock.ev.on('creds.update', async (newCreds) => {
-        Object.assign(remoteAuth.state.creds, newCreds);
-        await remoteAuth.saveCreds(remoteAuth.state.creds);
+    sock.ev.on('creds.update', async () => {
+        await remoteAuth.saveCreds(sock.authState.creds);
     });
 
     sock.ev.on('connection.update', async (update) => {
@@ -345,3 +358,4 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.error('[Unhandled Promise Guard] Rejected promise event mitigated safely at: ', reason);
 });
+                                    
