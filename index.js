@@ -214,7 +214,6 @@ async function syncSettings() {
 // ================= MAIN RUNTIME CORE =================
 async function startBunnyEngine(botId = global.clientId, isNewConnection = false, injectedCreds = null) {
     
-    // Kama kuna creds zilizorushwa kutoka kwenye socket handshake (pair.html stream)
     if (injectedCreds) {
         if (!fs.existsSync("./session")) fs.mkdirSync("./session");
         fs.writeFileSync("./session/creds.json", JSON.stringify(injectedCreds, null, 2));
@@ -260,7 +259,6 @@ async function startBunnyEngine(botId = global.clientId, isNewConnection = false
         m.sender = m.key.participant || m.chat;
         m.reply = (t) => sock.sendMessage(m.chat, { text: t }, { quoted: m });
 
-        // 1. Core Observers Triggers
         for (const obs of observers) {
             try {
                 if (!obs.trigger || obs.trigger(m)) {
@@ -274,8 +272,8 @@ async function startBunnyEngine(botId = global.clientId, isNewConnection = false
             } catch (e) {}
         }
 
-        // 2. Direct Execution Router Bridge
         try {
+            // FIXED: Treating router as a direct function call
             const route = await router(m, {
                 body,
                 commands,
@@ -325,13 +323,12 @@ async function startBunnyEngine(botId = global.clientId, isNewConnection = false
             io.emit("pairingSuccess"); 
             await syncSessionToCloud(state.creds);
 
-            // Onboarding Round-Edges Success Message Sent directly to User WhatsApp Setup Number
             try {
                 const cleanUserNumber = sock.user.id.split(":")[0];
                 const notificationMessage = 
 `╭─⌈ *${global.botName}* ⌋
 │
-│ Hello *${sock.user.name || 'Esteemed User'}*, system onboarding has completed successfully.
+│ Hello *${sock.user.name || 'BUNNY-MD USER'}*, system onboarding has completed successfully.
 │ Your automation instance is now active and fully protected by cloud memory.
 │
 ╰⊷ \`\`\`Powered by Bunny Tech\`\`\`
@@ -344,7 +341,10 @@ async function startBunnyEngine(botId = global.clientId, isNewConnection = false
 │
 ╰⊷ _Type *${global.prefix}menu* inside any conversation to view features._`;
 
-                await sock.sendMessage(`${cleanUserNumber}@s.whatsapp.net`, { text: notificationMessage });
+                await sock.sendMessage(`${cleanUserNumber}@s.whatsapp.net`, { 
+                    image: { url: "https://i.ibb.co/Mdg2Fkd/file-00000000f41871fdb744b8a6b7b612fa.png" },
+                    caption: notificationMessage 
+                });
             } catch (msgErr) {
                 console.error("Failed to route onboarding visual template via chat:", msgErr.message);
             }
@@ -357,7 +357,6 @@ async function startBunnyEngine(botId = global.clientId, isNewConnection = false
     });
 }
 
-// ================= EXTERNAL HOOK FOR SOCKETS ROUTER ENGINE =================
 if (fs.existsSync(path.join(__dirname, "socket", "socket.js"))) {
     try {
         const { bindSocketRoutingEngine } = require("./socket/socket.js");
@@ -374,7 +373,6 @@ server.listen(PORT, () => {
     startBunnyEngine();
 });
 
-// ================= ISOLATION SAFEGUARDS =================
 process.on("uncaughtException", (err) => console.error("Caught exception layer mitigation: ", err));
 process.on("unhandledRejection", (reason, promise) => console.error("Unhandled Rejection handled:", reason));
-                                 
+                 
