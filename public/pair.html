@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Bunny MD - Connection Portal</title>
+    <!-- Premium Google Fonts Integration for Professional Clean Typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Lucide Icons Vector Library for Clean Modern Interface Elements -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Realtime Web Server Socket Communication Pipeline Linking Script -->
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        /* Modern Netflix Cyberpunk Glassmorphism Color Token Definitions */
+        :root {
+            --netflix-black: #08080a;
+            --netflix-red: #e50914;
+            --netflix-red-glow: rgba(229, 9, 20, 0.45);
+            --glass-bg: rgba(20, 24, 30, 0.65);
+            --glass-border: rgba(255, 255, 255, 0.07);
+            --glass-border-active: rgba(229, 9, 20, 0.4);
+            --text-primary: #f5f5f7;
+            --text-secondary: #a0a5b5;
+            --radius-md: 14px;
+            --radius-lg: 20px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* Netflix-inspired Gradient Spotlight Backdrop Layout styling */
+        body {
+            background: radial-gradient(circle at 50% -20%, #2b0406 0%, var(--netflix-black) 75%);
+            background-color: var(--netflix-black);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        /* Phone-Based Viewport Simulation Container Framework Layer */
+        .phone-layout {
+            width: 100%;
+            max-width: 480px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            padding-bottom: 84px; /* Essential clearance gap layout for sticky bottom app bar */
+            border-left: 1px solid rgba(255, 255, 255, 0.03);
+            border-right: 1px solid rgba(255, 255, 255, 0.03);
+        }
+
+        /* Seamless Sticky Navigation Header with Live Infrastructure Indicator */
+        header {
+            padding: 22px 20px;
+            background: rgba(8, 8, 10, 0.8);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--glass-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .brand-logo-pack {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .brand-logo-pack h1 {
+            font-size: 1.3rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            background: linear-gradient(135deg, #ffffff 40%, #e50914 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .traffic-monitor-badge {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            background: rgba(255, 255, 255, 0.04);
+            padding: 6px 14px;
+            border-radius: 30px;
+            border: 1px solid var(--glass-border);
+        }
+
+        .neon-pulse-node {
+            width: 8px;
+            height: 8px;
+            background-color: var(--netflix-red);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--netflix-red);
+            animation: cyberGlowPulse 2.5s infinite;
+        }
+
+        @keyframes cyberGlowPulse {
+            0% { transform: scale(0.9); box-shadow: 0 0 4px var(--netflix-red); }
+            50% { transform: scale(1.1); box-shadow: 0 0 14px var(--netflix-red); }
+            100% { transform: scale(0.9); box-shadow: 0 0 4px var(--netflix-red); }
+        }
+
+        main {
+            padding: 20px;
+            flex: 1;
+        }
+
+        /* Smooth Viewport Transition Layer Animations */
+        .tab-panel-view {
+            display: none;
+            animation: smoothSlideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        .tab-panel-view.active-view {
+            display: block;
+        }
+
+        @keyframes smoothSlideUp {
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* High-End Premium Glassmorphism Module Card Design Specifications */
+        .cyber-glass-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(25px);
+            -webkit-backdrop-filter: blur(25px);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius-lg);
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .cyber-glass-card h2 {
+            font-size: 1.15rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .cyber-glass-card p {
+            font-size: 0.88rem;
+            color: var(--text-secondary);
+            line-height: 1.6;
+            margin-bottom: 24px;
+        }
+
+        /* Specialized Interactive Form Inputs Styling */
+        .input-box-frame {
+            position: relative;
+            margin-bottom: 18px;
+        }
+
+        .input-box-frame i {
+            position: absolute;
+            left: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-secondary);
+            width: 18px;
+            height: 18px;
+            transition: color 0.3s ease;
+        }
+
+        input[type="tel"] {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius-md);
+            padding: 16px 16px 16px 48px;
+            color: var(--text-primary);
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        input[type="tel"]:focus {
+            border-color: var(--netflix-red);
+            box-shadow: 0 0 15px var(--netflix-red-glow);
+        }
+
+        input[type="tel"]:focus + i {
+            color: var(--netflix-red);
+        }
+
+        /* High Voltage Action Buttons Incorporating Netflix Neon Style Glows */
+        .cyber-action-button {
+            width: 100%;
+            background-color: var(--netflix-red);
+            color: #ffffff;
+            border: none;
+            border-radius: var(--radius-md);
+            padding: 16px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            cursor: pointer;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 4px 20px rgba(229, 9, 20, 0.3);
+            transition: transform 0.2s ease, box-shadow 0.3s ease, opacity 0.3s ease;
+        }
+
+        .cyber-action-button:active {
+            transform: scale(0.98);
+        }
+
+        .cyber-action-button:disabled {
+            opacity: 0.5;
+            box-shadow: none;
+            cursor: not-allowed;
+        }
+
+        /* Realtime Feedback Interface Boxes Layer Panels */
+        .output-feedback-panel {
+            background: rgba(0, 0, 0, 0.45);
+            border: 1px dashed var(--glass-border-active);
+            border-radius: var(--radius-md);
+            padding: 22px;
+            text-align: center;
+            margin-top: 20px;
+            display: none;
+            box-shadow: inset 0 0 15px rgba(0, 0, 0, 0.5);
+            animation: smoothSlideUp 0.3s ease-out;
+        }
+
+        .neon-token-output {
+            font-size: 1.9rem;
+            font-weight: 700;
+            letter-spacing: 5px;
+            color: var(--netflix-red);
+            text-shadow: 0 0 12px var(--netflix-red-glow);
+            margin-bottom: 12px;
+            user-select: all;
+        }
+
+        .matrix-qr-frame {
+            width: 210px;
+            height: 210px;
+            background-color: #ffffff;
+            margin: 0 auto 16px auto;
+            border-radius: var(--radius-md);
+            padding: 12px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            box-shadow: 0 0 25px rgba(255, 255, 255, 0.1);
+        }
+
+        .matrix-qr-frame img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        /* Personalized Automation Control Dashboard Grid Layout */
+        .dashboard-metric-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .metric-row-item {
+            background: rgba(0, 0, 0, 0.35);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: border-color 0.3s ease;
+        }
+
+        .metric-row-item:hover {
+            border-color: var(--glass-border-active);
+        }
+
+        .metric-label-pack {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.88rem;
+            color: var(--text-secondary);
+        }
+
+        .metric-value-box {
+            font-size: 0.95rem;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+        }
+
+        /* Clean Communications Link Elements Cards Setup */
+        .personnel-directory {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .network-hyperlink-card {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            text-decoration: none;
+            color: var(--text-primary);
+            transition: background 0.2s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .network-hyperlink-card:hover {
+            background: rgba(229, 9, 20, 0.04);
+            border-color: var(--glass-border-active);
+            box-shadow: 0 4px 15px rgba(229, 9, 20, 0.05);
+        }
+
+        .personnel-meta-block {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .text-details h4 {
+            font-size: 0.92rem;
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+
+        .text-details span {
+            font-size: 0.76rem;
+            color: var(--text-secondary);
+        }
+
+        /* Sticky Low-Profile Navigation Bar Layout Blocks with Blur Effects */
+        .sticky-footer-bar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 74px;
+            background: rgba(14, 16, 22, 0.82);
+            backdrop-filter: blur(25px);
+            -webkit-backdrop-filter: blur(25px);
+            border-top: 1px solid var(--glass-border);
+            display: flex;
+            z-index: 100;
+        }
+
+        .nav-trigger-tab {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            gap: 5px;
+            color: var(--text-secondary);
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 0.75rem;
+            font-weight: 500;
+            transition: color 0.3s ease, text-shadow 0.3s ease;
+        }
+
+        .nav-trigger-tab.active-tab {
+            color: var(--netflix-red);
+            text-shadow: 0 0 8px rgba(229, 9, 20, 0.3);
+        }
+
+        .nav-trigger-tab i {
+            width: 22px;
+            height: 22px;
+            transition: transform 0.3s ease;
+        }
+
+        .nav-trigger-tab.active-tab i {
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="phone-layout">
+        <!-- Persistent Interactive Header Setup -->
+        <header>
+            <div class="brand-logo-pack">
+                <i data-lucide="Zap" style="color: var(--netflix-red); fill: var(--netflix-red);"></i>
+                <h1>Bunny MD</h1>
+            </div>
+            <div class="traffic-monitor-badge">
+                <div class="neon-pulse-node"></div>
+                <span>Server Online</span>
+            </div>
+        </header>
+
+        <main>
+            <!-- STACK GATEWAY 1: REGISTRATION WIZARDS (Toggled dynamically when no authenticated session exists) -->
+            <div id="registration-gateway">
+                <!-- PANEL VIEW: Link Code Generation Module -->
+                <div id="panel-link-code" class="tab-panel-view active-view">
+                    <div class="cyber-glass-card">
+                        <h2><i data-lucide="Hash" style="color: var(--netflix-red);"></i>Link Code</h2>
+                        <p>Enter your phone number below to link your WhatsApp account using an instant numeric verification method.</p>
+                        
+                        <div class="input-box-frame">
+                            <i data-lucide="Smartphone"></i>
+                            <input type="tel" id="phone-field-node" placeholder="255780470905">
+                        </div>
+                        
+                        <button class="cyber-action-button" id="trigger-code-btn" onclick="initializeAuthRoutine('pairingCode')">
+                            <i data-lucide="Fingerprint"></i>
+                            <span>Get Code</span>
+                        </button>
+
+                        <div class="output-feedback-panel" id="display-frame-code">
+                            <div class="neon-token-output" id="inject-string-code">- - - - - - - -</div>
+                            <p style="margin-bottom: 0; font-size: 0.8rem; color: var(--text-secondary);">Tap and hold the code above to copy, then enter it into your device pairing notification panel.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PANEL VIEW: Matrix QR Scan Core Verification Module -->
+                <div id="panel-matrix-qr" class="tab-panel-view">
+                    <div class="cyber-glass-card">
+                        <h2><i data-lucide="Qr-code" style="color: var(--netflix-red);"></i>QR Verification</h2>
+                        <p>Scan this QR code with your linked device to activate the bot. The connection matrix refreshes automatically.</p>
+                        
+                        <button class="cyber-action-button" id="trigger-qr-btn" onclick="initializeAuthRoutine('qr')">
+                            <i data-lucide="Scan-face"></i>
+                            <span>Show QR Code</span>
+                        </button>
+
+                        <div class="output-feedback-panel" id="display-frame-qr">
+                            <div class="matrix-qr-frame">
+                                <img id="inject-matrix-src" src="" alt="Awaiting secure matrix updates...">
+                            </div>
+                            <p style="margin-bottom: 0; font-size: 0.8rem; color: var(--text-secondary);">The matrix array automatically requests updates. Keep this panel open until setup verifies.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- STACK GATEWAY 2: LIVE PERFORMANCE MONITOR (Launches and locks immediately following session handshake) -->
+            <div id="active-terminal-dashboard" style="display: none;">
+                <div class="cyber-glass-card" style="border-color: var(--glass-border-active); box-shadow: 0 10px 40px rgba(229, 9, 20, 0.1);">
+                    <h2 style="color: var(--netflix-red);"><i data-lucide="Activity"></i>Instance Operational</h2>
+                    <p>Your session architecture state is safely verified inside cloud servers. Remote process orchestration systems running without disruptions.</p>
+                    
+                    <div class="dashboard-metric-stack">
+                        <div class="metric-row-item">
+                            <div class="metric-label-pack"><i data-lucide="Terminal"></i><span>Node Link ID</span></div>
+                            <div class="metric-value-box" id="lbl-dash-id">Acquiring state...</div>
+                        </div>
+                        <div class="metric-row-item">
+                            <div class="metric-label-pack"><i data-lucide="Bot"></i><span>Bot Identity</span></div>
+                            <div class="metric-value-box" id="lbl-dash-name">Acquiring state...</div>
+                        </div>
+                        <div class="metric-row-item">
+                            <div class="metric-label-pack"><i data-lucide="Sliders"></i><span>System Prefix</span></div>
+                            <div class="metric-value-box" id="lbl-dash-prefix">Acquiring state...</div>
+                        </div>
+                        <div class="metric-row-item">
+                            <div class="metric-label-pack"><i data-lucide="Hourglass"></i><span>Active Uptime</span></div>
+                            <div class="metric-value-box" id="lbl-dash-uptime" style="color: var(--netflix-red); text-shadow: 0 0 10px var(--netflix-red-glow);">00:00:00</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PANEL VIEW: Non-Volatile General System Capabilities & Network Infrastructure Personnel Directory -->
+            <div id="panel-architecture-about" class="tab-panel-view">
+                <div class="cyber-glass-card">
+                    <h2><i data-lucide="Cpu" style="color: var(--netflix-red);"></i>System Capability</h2>
+                    <p>High-speed message routing with autonomous self-healing structures and volatile execution tracking designed for zero-lag operation processes.</p>
+                </div>
+
+                <div class="cyber-glass-card">
+                    <h2><i data-lucide="Radio" style="color: var(--netflix-red);"></i>Infrastructure Operations</h2>
+                    <p>Direct communication channels to verified automation personnel for platform configuration management and design inquiries.</p>
+                    
+                    <div class="personnel-directory">
+                        <!-- CORE SYSTEMS ENGINEER ASSET LINK -->
+                        <a href="https://wa.me/255780470905" target="_blank" class="network-hyperlink-card">
+                            <div class="personnel-meta-block">
+                                <i data-lucide="Shield-alert" style="color: var(--netflix-red);"></i>
+                                <div class="text-details">
+                                    <h4>Core Infrastructure Developer</h4>
+                                    <span>Primary Operations Engineer</span>
+                                </div>
+                            </div>
+                            <i data-lucide="Chevron-right" style="width: 18px; height: 18px; color: var(--text-secondary);"></i>
+                        </a>
+
+                        <!-- INTERFACE DESIGN SPECIALIST ASSET LINK -->
+                        <a href="https://wa.me/255747470941" target="_blank" class="network-hyperlink-card">
+                            <div class="personnel-meta-block">
+                                <i data-lucide="Layers" style="color: var(--netflix-red);"></i>
+                                <div class="text-details">
+                                    <h4>UI/UX Designer & Assistant</h4>
+                                    <span>Interface Architecture Layouts</span>
+                                </div>
+                            </div>
+                            <i data-lucide="Chevron-right" style="width: 18px; height: 18px; color: var(--text-secondary);"></i>
+                        </a>
+
+                        <!-- AUTONOMOUS CODER INTELLIGENCE PORTAL DIRECT CONNECTION LINK -->
+                        <a href="https://gemini.google.com" target="_blank" class="network-hyperlink-card">
+                            <div class="personnel-meta-block">
+                                <i data-lucide="Binary" style="color: var(--netflix-red);"></i>
+                                <div class="text-details">
+                                    <h4>AI Logic Architect / Coder Core</h4>
+                                    <span>Autonomous Compute Intelligence Engine</span>
+                                </div>
+                            </div>
+                            <i data-lucide="Chevron-right" style="width: 18px; height: 18px; color: var(--text-secondary);"></i>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Fixed Structural Navigation Options Interface Bar -->
+        <nav class="sticky-footer-bar" id="app-navigation-bar">
+            <button class="nav-trigger-tab active-tab" onclick="executeTabSwitch('panel-link-code', this)" id="btn-trigger-tab-code">
+                <i data-lucide="Hash"></i>
+                <span>Link Code</span>
+            </button>
+            <button class="nav-trigger-tab" onclick="executeTabSwitch('panel-matrix-qr', this)" id="btn-trigger-tab-qr">
+                <i data-lucide="Qr-code"></i>
+                <span>Scan QR</span>
+            </button>
+            <button class="nav-trigger-tab" onclick="executeTabSwitch('panel-architecture-about', this)">
+                <i data-lucide="Terminal"></i>
+                <span>About</span>
+            </button>
+        </nav>
+    </div>
+
+    <!-- Interface Controller Engine Script Blocks Executing Structural Sync Sequences -->
+    <script>
+        // Init duplex state data stream connections back to parent Node runtime cluster processes
+        const socket = io();
+        
+        let localTimestampAnchor = null;
+        let persistentChronographTask = null;
+
+        // Auto-bootstrap client asset vector frameworks on browser initialization completion loops
+        document.addEventListener("DOMContentLoaded", () => {
+            lucide.createIcons();
+            interceptSessionPersistenceLease();
+        });
+
+        /**
+         * Orchestrate viewport visual content switches across available single-page structures
+         */
+        function executeTabSwitch(targetPanelLayoutId, clickEventOriginNode) {
+            document.querySelectorAll('.tab-panel-view').forEach(panel => {
+                panel.classList.remove('active-view');
+            });
+            document.querySelectorAll('.nav-trigger-tab').forEach(navItem => {
+                navItem.classList.remove('active-tab');
+            });
+
+            document.getElementById(targetPanelLayoutId).classList.add('active-view');
+            clickEventOriginNode.classList.add('active-tab');
+        }
+
+        /**
+         * Assembles registration configurations and forwards initialization calls directly downstream
+         */
+        function initializeAuthRoutine(chosenWorkflowStrategy) {
+            const rawInputField = document.getElementById('phone-field-node');
+            const sanitizedInputNumber = rawInputField.value.replace(/[^0-9]/g, '');
+
+            if (chosenWorkflowStrategy === 'pairingCode' && !sanitizedInputNumber) {
+                alert('A valid operational international phone number layout string is required for numeric key requests.');
+                return;
+            }
+
+            // Lock interaction components to ensure processing pipelines don't experience noise
+            document.getElementById('trigger-code-btn').disabled = true;
+            document.getElementById('trigger-qr-btn').disabled = true;
+
+            if (chosenWorkflowStrategy === 'pairingCode') {
+                document.getElementById('display-frame-code').style.display = 'block';
+                document.getElementById('inject-string-code').innerText = 'LOADING...';
+            } else {
+                document.getElementById('display-frame-qr').style.display = 'block';
+                document.getElementById('inject-matrix-src').src = ''; 
+            }
+
+            // Dispatch configuration request map elements into WebSocket transaction channels
+            socket.emit('requestPairing', {
+                phoneNumber: sanitizedInputNumber,
+                method: chosenWorkflowStrategy
+            });
+        }
+
+        /**
+         * Scans internal non-volatile client caches to verify and maintain user state validation leases
+         */
+        function interceptSessionPersistenceLease() {
+            const cacheStatusLease = localStorage.getItem('bunny_session_active');
+            
+            if (cacheStatusLease === 'true') {
+                const preservedId = localStorage.getItem('bunny_session_bot_id');
+                const preservedPersonaName = localStorage.getItem('bunny_session_bot_name') || 'Bunny MD';
+                const preservedPrefixToken = localStorage.getItem('bunny_session_prefix') || '.';
+                const preservedTimestamp = localStorage.getItem('bunny_session_start_time');
+
+                localTimestampAnchor = preservedTimestamp ? parseInt(preservedTimestamp, 10) : Date.now();
+                
+                transitionViewToActiveDashboard(preservedId, preservedPersonaName, preservedPrefixToken);
+            }
+        }
+
+        /**
+         * Adjusts the visible UI structure securely when a persistent execution lease verifies successfully
+         */
+        function transitionViewToActiveDashboard(botIdString, botNameString, configPrefixToken) {
+            // Hide registration layouts and functional activation tabs immediately
+            document.getElementById('registration-gateway').style.display = 'none';
+            document.getElementById('btn-trigger-tab-code').style.display = 'none';
+            document.getElementById('btn-trigger-tab-qr').style.display = 'none';
+            
+            // Assign active server metadata strings into the view hierarchy nodes
+            document.getElementById('lbl-dash-id').innerText = botIdString;
+            document.getElementById('lbl-dash-name').innerText = botNameString;
+            document.getElementById('lbl-dash-prefix').innerText = `"${configPrefixToken}"`;
+            
+            document.getElementById('active-terminal-dashboard').style.display = 'block';
+            document.getElementById('active-terminal-dashboard').classList.add('active-view');
+
+            // Spawn chronological calculation loops computing precise service run durations
+            if (!persistentChronographTask) {
+                if (!localTimestampAnchor) {
+                    localTimestampAnchor = Date.now();
+                    localStorage.setItem('bunny_session_start_time', localTimestampAnchor);
+                }
+                
+                persistentChronographTask = setInterval(calculateOperationalChronographCycle, 1000);
+            }
+        }
+
+        /**
+         * Performs full teardown sequences reverting dashboard interfaces back into baseline device link modes
+         */
+        function enforceTotalUIRuntimePurge() {
+            clearInterval(persistentChronographTask);
+            persistentChronographTask = null;
+            localTimestampAnchor = null;
+
+            // Evict outdated operational state records from browser memory stores completely
+            localStorage.removeItem('bunny_session_active');
+            localStorage.removeItem('bunny_session_bot_id');
+            localStorage.removeItem('bunny_session_bot_name');
+            localStorage.removeItem('bunny_session_prefix');
+            localStorage.removeItem('bunny_session_start_time');
+
+            // Reset layouts back to baseline states
+            document.getElementById('active-terminal-dashboard').style.display = 'none';
+            document.getElementById('btn-trigger-tab-code').style.display = 'flex';
+            document.getElementById('btn-trigger-tab-qr').style.display = 'flex';
+            document.getElementById('registration-gateway').style.display = 'block';
+            
+            document.getElementById('trigger-code-btn').disabled = false;
+            document.getElementById('trigger-qr-btn').disabled = false;
+            document.getElementById('display-frame-code').style.display = 'none';
+            document.getElementById('display-frame-qr').style.display = 'none';
+            
+            executeTabSwitch('panel-link-code', document.getElementById('btn-trigger-tab-code'));
+        }
+
+        /**
+         * Mathematical chronograph looping logic evaluating session deployment uptime states
+         */
+        function calculateOperationalChronographCycle() {
+            if (!localTimestampAnchor) return;
+            
+            const dynamicDeltaDurationMs = Date.now() - localTimestampAnchor;
+            
+            const runningSeconds = Math.floor((dynamicDeltaDurationMs / 1000) % 60);
+            const runningMinutes = Math.floor((dynamicDeltaDurationMs / (1000 * 60)) % 60);
+            const runningHours = Math.floor((dynamicDeltaDurationMs / (1000 * 60 * 60)) % 24);
+            const runningDays = Math.floor(dynamicDeltaDurationMs / (1000 * 60 * 60 * 24));
+
+            const formatTwoDigits = (numericalValue) => String(numericalValue).padStart(2, '0');
+            
+            let structuredOutputText = `${formatTwoDigits(runningHours)}:${formatTwoDigits(runningMinutes)}:${formatTwoDigits(runningSeconds)}`;
+            if (runningDays > 0) {
+                structuredOutputText = `${runningDays}d ${structuredOutputText}`;
+            }
+
+            document.getElementById('lbl-dash-uptime').innerText = structuredOutputText;
+        }
+
+        // =========================================================
+        // REALTIME REMOTE SYSTEM EVENT LISTENER INTERCEPT CHANNELS
+        // =========================================================
+        
+        socket.on('pairingCodeResponse', (incomingDataPayload) => {
+            document.getElementById('inject-string-code').innerText = incomingDataPayload.code;
+            document.getElementById('trigger-code-btn').disabled = false;
+        });
+
+        socket.on('qrCodeResponse', (incomingDataPayload) => {
+            // Stream raw base64 string configurations straight into graphic target source frames
+            document.getElementById('inject-matrix-src').src = incomingDataPayload.qr;
+            document.getElementById('trigger-qr-btn').disabled = false;
+        });
+
+        socket.on('pairingSuccess', (incomingDataPayload) => {
+            const explicitUserNumber = document.getElementById('phone-field-node').value.replace(/[^0-9]/g, '');
+            const compiledBotID = explicitUserNumber ? `${explicitUserNumber}:0` : "Active Instance";
+            
+            localStorage.setItem('bunny_session_active', 'true');
+            localStorage.setItem('bunny_session_bot_id', compiledBotID);
+            
+            transitionViewToActiveDashboard(compiledBotID, "Bunny MD", ".");
+        });
+
+        socket.on('error', (incomingDataPayload) => {
+            alert(incomingDataPayload.message);
+            enforceTotalUIRuntimePurge();
+        });
+
+        /**
+         * CRITICAL SYSTEM GUARD HOOK: Catching real-time eviction alerts emitted when an active 
+         * authorization profile state is dropped or erased inside remote database cluster rows.
+         */
+        socket.on('sessionTerminated', () => {
+            console.warn('[Security Event Alert] Remote data record removed. Enforcing execution teardown layout structures.');
+            enforceTotalUIRuntimePurge();
+        });
+    </script>
+</body>
+</html>
