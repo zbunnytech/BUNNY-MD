@@ -1,269 +1,373 @@
-import express from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import fs from 'fs';
-import makeWASocket, { 
-    DisconnectReason, 
-    BufferJSON
-} from '@whiskeysockets/baileys'; 
+require("dotenv").config();
 
-// Setup path resolution for ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore,
+    getContentType
+} = require("@whiskeysockets/baileys");
 
-// Initialize Express, Server, and Environment Details
+const pino = require("pino");
+const fs = require("fs");
+const path = require("path");
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const QRCode = require("qrcode");
+
+const { createClient } = require("@supabase/supabase-js");
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
+// ================= GLOBAL =================
+global.prefix = ".";
+global.botName = "Bunny MD";
+global.ownerName = "Lupin Starnley";
+global.clientId = process.env.CLIENT_ID || "BUNNY_DEFAULT";
+
+// ================= CORE MAPPINGS =================
+const router = require("./lib/router");
+const cache = require("./lib/cache");
+
+// ================= PATHS =================
+const pluginPath = path.join(__dirname, "commands"); // Zote zipo ndani ya commands/ kama ulivyosema
+const observerPath = path.join(__dirname, "observers");
+
+// ================= STORAGE =================
+const commands = new Map();
+const aliases = new Map();
+const observers = [];
+
+// ================= AUTO RELOAD ENGINE (LAZY LOADING) =================
+let reloadLock = false;
+
+function startAutoReload() {
+    if (reloadLock) return;
+    reloadLock = true;
+
+    try {
+        fs.watch(pluginPath, { persistent: true }, (event, file) => {
+            if (file && file.endsWith(".js")) {
+                console.log(`♻️ Command Layer changed: ${file}`);
+                loadCommands();
+            }
+        });
+
+        fs.watch(observerPath, { persistent: true }, (event, file) => {
+            if (file && file.endsWith(".js")) {
+                console.log(`👁️ Observer Layer changed: ${file}`);
+                loadObservers();
+            }
+        });
+
+        console.log("🔥 LAZY LOAD & AUTO RELOAD SYSTEM ACTIVE");
+    } catch (e) {
+        console.log("Lazy reload engine warning:", e.message);
+    }
+}
+
+// ================= SERVER LAYER =================
 const app = express();
-const server = createServer(app);
+const server = http.createServer(app);
 const io = new Server(server);
+const PORT = process.env.PORT || 10000;
 
-const PORT = process.env.PORT || 3000;
-const SERVER_ID = process.env.SERVER_ID || 'Render_Alpha';
-const MAX_BOT_CONNECTIONS = 1; // Locked for a single standalone user profile
+// Serve public directory dynamically (Inajumuisha public/pair.html na assets zake)
+app.use(express.static(path.join(__dirname, "public")));
 
-// Local static configuration profile mapping (Bypassing Supabase completely)
-const localConfig = {
-    bot_name: 'Bunny MD',
-    bot_footer: 'Powered by Bunny Tech',
-    prefix: '.',
-    owner_name: 'Lupin Starnley',
-    bot_pic: 'https://i.ibb.co/LDMjMYyy/file-00000000855c71f89fb70f5f8bebc2b2.png',
-    update_channel_jid: '120363426850850275@newsletter'
-};
-
-// Cache tracking system to prevent high RAM consumption
-const activeInstances = new Map();
-const SESSION_FILE_PATH = path.join(__dirname, 'session.json');
-
-// Serve the static pairing panel from public directory
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Redirect main URL directly to the pairing panel to fix 'Cannot GET /'
-app.get('/', (req, res) => {
-    res.redirect('/pair');
+// Redirect root to /pair layout natively
+app.get("/", (req, res) => {
+    res.redirect("/pair");
 });
 
-app.get('/pair', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'pair.html'));
+app.get("/pair", (req, res) => {
+    res.sendFile(path.join(__dirname, "public", "pair.html"));
 });
 
-/**
- * Main Orchestrator to spin up a single dynamic WhatsApp Bot Instance
- * Powered entirely via Pristine Local Disk/RAM Sessions
- */
-async function startBotInstance(botId, isNewConnection = false, injectedCreds = null) {
-    if (activeInstances.has(botId)) {
-        console.log(`[System] Instance ${botId} already running.`);
-        return;
-    }
+// ================= LOAD COMMANDS ARCHITECTURE =================
+function loadCommands() {
+    commands.clear();
+    aliases.clear();
 
-    console.log(`[System] Initializing Standalone WhatsApp Client for ID: ${botId}...`);
+    if (!fs.existsSync(pluginPath)) fs.mkdirSync(pluginPath);
 
-    let masterCreds = {};
+    const files = fs.readdirSync(pluginPath).filter(f => f.endsWith(".js"));
 
-    // 1. Resolve Credentials mapping either from Direct Socket injection or Local Storage file
-    if (injectedCreds) {
-        masterCreds = injectedCreds;
-        // Back up to local storage instantly to guarantee seamless standalone restarts
-        fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify({ botId, creds: masterCreds }, BufferJSON.replacer));
-    } else if (fs.existsSync(SESSION_FILE_PATH)) {
+    for (const file of files) {
         try {
-            const rawFileData = fs.readFileSync(SESSION_FILE_PATH, 'utf-8');
-            const parsedData = JSON.parse(rawFileData, BufferJSON.reviver);
-            masterCreds = parsedData.creds;
-        } catch (err) {
-            console.error('[Auth Profile] Local file corruption detected. Awaiting secure pairing setup:', err.message);
-            return;
+            const filePath = path.join(pluginPath, file);
+            delete require.cache[require.resolve(filePath)];
+
+            const plugin = require(filePath);
+            const name = plugin.command || file.replace(".js", "");
+
+            commands.set(name, plugin);
+
+            if (Array.isArray(plugin.alias)) {
+                for (const a of plugin.alias) {
+                    aliases.set(a, name);
+                }
+            }
+        } catch (e) {
+            console.error(`Error mapping dynamic core file ${file}:`, e.message);
         }
-    } else {
-        console.log(`[Auth Profile] Pristine state setup tracking active. Manual setup required via web portal.`);
-        return;
     }
+    console.log(`✅ ${commands.size} Custom Packages Parsed Successfully into Runtime memory.`);
+}
 
-    // Ephemeral Runtime State Bridge matching Baileys internal keys tracker
-    const memoryAuthState = {
-        creds: masterCreds,
-        keys: {
-            get: (type, ids) => {
-                const data = {};
-                for (const id of ids) {
-                    data[id] = masterCreds[type]?.[id];
-                }
-                return data;
-            },
-            set: (data) => {
-                for (const type in data) {
-                    for (const id in data[type]) {
-                        if (!masterCreds[type]) masterCreds[type] = {};
-                        if (data[type][id] === null) {
-                            delete masterCreds[type][id];
-                        } else {
-                            masterCreds[type][id] = data[type][id];
-                        }
-                    }
-                }
+// ================= LOAD OBSERVERS ARCHITECTURE =================
+function loadObservers() {
+    observers.length = 0;
+
+    if (!fs.existsSync(observerPath)) fs.mkdirSync(observerPath);
+
+    const files = fs.readdirSync(observerPath).filter(f => f.endsWith(".js"));
+
+    for (const file of files) {
+        try {
+            const filePath = path.join(observerPath, file);
+            delete require.cache[require.resolve(filePath)];
+
+            const obs = require(filePath);
+            if (obs.onMessage) observers.push(obs);
+
+        } catch (e) {
+            console.error(`Error mapping observer ${file}:`, e.message);
+        }
+    }
+    console.log(`👁️ Observers Active: ${observers.length}`);
+}
+
+// ================= CLOUD SYNC ENGINE (BUNNY_SESSIONS) =================
+async function syncSessionToCloud(creds) {
+    try {
+        const base64 = Buffer.from(JSON.stringify(creds)).toString("base64");
+        await supabase.from("bunny_sessions").upsert({
+            id: 'bunny_session_v1',
+            data: base64,
+            client_id: global.clientId
+        });
+    } catch (e) {
+        console.error("Cloud session update rejected:", e.message);
+    }
+}
+
+async function loadSessionFromCloud() {
+    try {
+        const { data } = await supabase
+            .from("bunny_sessions")
+            .select("data")
+            .eq("id", 'bunny_session_v1')
+            .single();
+
+        if (data) {
+            const decoded = Buffer.from(data.data, "base64").toString("utf-8");
+            if (!fs.existsSync("./session")) fs.mkdirSync("./session");
+            fs.writeFileSync("./session/creds.json", decoded);
+            console.log(`☁️ Session Restored from bunny_sessions for ${global.clientId}`);
+        }
+    } catch (e) {
+        console.log("No cloud session found. Awaiting fresh registration handshake...");
+    }
+}
+
+// ================= NO-HARDCODED REALTIME SETTINGS SYNC =================
+async function syncSettings() {
+    try {
+        // Initial Fetch
+        const { data: allSettings } = await supabase
+            .from("bunny_settings")
+            .select("setting_name, extra_data")
+            .eq("client_id", global.clientId);
+
+        if (allSettings) {
+            for (const item of allSettings) {
+                if (item.setting_name === "prefix") global.prefix = item.extra_data.current || ".";
+                if (item.setting_name === "bot_name") global.botName = item.extra_data.current || "Bunny MD";
+                if (item.setting_name === "owner_name") global.ownerName = item.extra_data.current || "Lupin Starnley";
             }
         }
-    };
 
-    // Initialize Baileys connection profile explicitly utilizing stable memory structures with desktop masquerade
+        // Live Realtime Database Updates Listener
+        supabase
+            .channel(`live-bunny-settings-${global.clientId}`)
+            .on("postgres_changes", {
+                event: "UPDATE",
+                schema: "public",
+                table: "bunny_settings",
+                filter: `client_id=eq.${global.clientId}`
+            }, payload => {
+                const updatedSetting = payload.new.setting_name;
+                const updatedValue = payload.new.extra_data?.current;
+
+                if (updatedSetting === "prefix") global.prefix = updatedValue;
+                if (updatedSetting === "bot_name") global.botName = updatedValue;
+                if (updatedSetting === "owner_name") global.ownerName = updatedValue;
+                
+                console.log(`🔔 Cloud Config Updated: ${updatedSetting} -> ${updatedValue}`);
+            })
+            .subscribe();
+    } catch (e) {
+        console.error("Settings sync connection warning:", e.message);
+    }
+}
+
+// ================= MAIN RUNTIME CORE =================
+async function startBunnyEngine() {
+    await loadSessionFromCloud();
+    await syncSettings();
+
+    loadCommands();
+    loadObservers();
+    startAutoReload(); 
+
+    const { state, saveCreds } = await useMultiFileAuthState("session");
+    const { version } = await fetchLatestBaileysVersion();
+
     const sock = makeWASocket({
-        auth: {
-            creds: memoryAuthState.creds,
-            keys: memoryAuthState.keys
-        },
+        version,
+        logger: pino({ level: "silent" }),
         printQRInTerminal: false,
-        mobile: false,
-        browser: ['Ubuntu', 'Chrome', '20.0.04']
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }))
+        },
+        browser: ["Bunny MD Core", "Chrome", "20.0.0"]
     });
 
-    activeInstances.set(botId, sock);
+    // ================= MESSAGE ROUTING AND OBSERVATION =================
+    sock.ev.on("messages.upsert", async ({ messages }) => {
+        const m = messages[0];
+        if (!m || !m.message) return;
 
-    // Dynamic Module Hooking for Real-Time execution pipelines
-    const routerPath = path.join(__dirname, 'lib', 'router.js');
-    const cachePath = path.join(__dirname, 'lib', 'cache.js');
+        let body =
+            m.message?.conversation ||
+            m.message?.extendedTextMessage?.text ||
+            m.message?.imageMessage?.caption ||
+            m.message?.videoMessage?.caption ||
+            "";
+        body = body.trim();
 
-    sock.ev.on('creds.update', () => {
-        // Automatically save updated session keys straight into local host partition
-        fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify({ botId, creds: memoryAuthState.creds }, BufferJSON.replacer));
-    });
+        m.chat = m.key.remoteJid;
+        m.sender = m.key.participant || m.chat;
+        m.reply = (t) => sock.sendMessage(m.chat, { text: t }, { quoted: m });
 
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
-
-        if (connection === 'close') {
-            const reason = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode;
-            
-            // Bypass internal network self-healing restarts from WhatsApp to avoid instance dropping loops
-            if (reason === 515 || reason === DisconnectReason.restartRequired) {
-                console.log(`[Connection Intercept] Soft hot-restart signaled by network for ${botId}. Safeguarding runtime reference.`);
-                return;
-            }
-
-            const shouldReconnect = reason !== DisconnectReason.loggedOut;
-            console.log(`[Connection] Instance ${botId} severed. Reason: ${reason}. Reconnecting status: ${shouldReconnect}`);
-
-            activeInstances.delete(botId);
-
-            if (shouldReconnect) {
-                startBotInstance(botId);
-            } else {
-                console.log(`[Connection Warning] Global Logout detected. Clearing out session files completely.`);
-                if (fs.existsSync(SESSION_FILE_PATH)) {
-                    fs.unlinkSync(SESSION_FILE_PATH);
-                }
-            }
-        } else if (connection === 'open') {
-            console.log(`[Success] Standalone Instance ${botId} safely linked to WhatsApp Network.`);
-
-            // Backup active setup sync to avoid registration gaps
-            fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify({ botId, creds: memoryAuthState.creds }, BufferJSON.replacer));
-
-            // Execution sequence for required channel integration rules
+        // 1. Core Observers Triggers
+        for (const obs of observers) {
             try {
-                const targetNewsletterJid = localConfig.update_channel_jid;
-                await sock.newsletterFollow(targetNewsletterJid);
+                if (!obs.trigger || obs.trigger(m)) {
+                    await obs.onMessage(m, sock, {
+                        supabase,
+                        cache,
+                        clientId: global.clientId,
+                        userSettings: cache.getUser?.(m.sender) || {}
+                    });
+                }
+            } catch (e) {}
+        }
 
-                // Push success notification layout upon onboarding validation
-                if (isNewConnection) {
-                    const cleanUserNumber = botId.split(':')[0];
-                    const userName = sock.user.name || 'Esteemed User';
+        // 2. Direct Execution Router Bridge
+        try {
+            const route = await router(m, {
+                body,
+                commands,
+                aliases,
+                observers,
+                cache,
+                supabase,
+                prefix: global.prefix,
+                clientId: global.clientId
+            });
 
-                    const notificationMessage = 
-`╭─⌈ *${localConfig.bot_name}* ⌋
+            if (!route) return;
+
+            if (route.type === "command" && route.command) {
+                await route.command.execute(m, sock, route.context);
+            } 
+            else if (route.type === "custom" && typeof route.execute === "function") {
+                await route.execute(sock);
+            }
+
+        } catch (e) {
+            console.error("Router Interface Runtime Error:", e.message);
+        }
+    });
+
+    // ================= CONNECTION MONITORING =================
+    sock.ev.on("connection.update", async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            const qrData = await QRCode.toDataURL(qr);
+            io.emit("qr", qrData);
+            io.emit("qrCodeResponse", { qr: qrData }); // Backwards support for custom pair.html structures
+        }
+
+        if (connection === "close") {
+            const shouldReconnect =
+                (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+
+            console.log(`⚠️ Connection lost. Reconnecting status: ${shouldReconnect}`);
+            if (shouldReconnect) startBunnyEngine();
+        }
+
+        if (connection === "open") {
+            console.log(`✅ ${global.botName} Connected Successfully to WhatsApp Framework.`);
+            io.emit("connected");
+            io.emit("pairingSuccess"); 
+            await syncSessionToCloud(state.creds);
+
+            // Onboarding Round-Edges Success Message Sent directly to User WhatsApp Setup Number
+            try {
+                const cleanUserNumber = sock.user.id.split(":")[0];
+                const notificationMessage = 
+`╭─⌈ *${global.botName}* ⌋
 │
-│ Hello ${userName}, dynamic system onboarding has completed successfully.
-│ Your automation instance is now active and fully protected by local memory.
+│ Hello *${sock.user.name || 'Esteemed User'}*, system onboarding has completed successfully.
+│ Your automation instance is now active and fully protected by cloud memory.
 │
-╰⊷ \`\`\`${localConfig.bot_footer}\`\`\`
+╰⊷ \`\`\`Powered by Bunny Tech\`\`\`
 
 ╭─⌈ *CONFIGURATION OVERVIEW* ⌋
 │
-╰⊷ Prefix Strategy: \`\`\`${localConfig.prefix}\`\`\`
-╰⊷ System Persona: *${localConfig.bot_name}*
-╰⊷ Core Architect: *${localConfig.owner_name}*
+╰⊷ Prefix Strategy: \`\`\`${global.prefix}\`\`\`
+╰⊷ System Persona: *${global.botName}*
+╰⊷ Core Architect: *${global.ownerName}*
 │
-╰⊷ _Type *${localConfig.prefix}menu* inside any conversation to view features._`;
+╰⊷ _Type *${global.prefix}menu* inside any conversation to view features._`;
 
-                    await sock.sendMessage(`${cleanUserNumber}@s.whatsapp.net`, { 
-                        text: notificationMessage,
-                        contextInfo: {
-                            externalAdReply: {
-                                title: localConfig.bot_name,
-                                body: localConfig.bot_footer,
-                                previewType: 'PHOTO',
-                                thumbnailURL: localConfig.bot_pic,
-                                sourceUrl: 'https://bunny-bot.mooo.com/pair'
-                            }
-                        }
-                    });
-                }
-
-            } catch (forcedJoinError) {
-                console.error(`[Security Warning] Critical community alignment failed for ${botId}:`, forcedJoinError.message);
+                await sock.sendMessage(`${cleanUserNumber}@s.whatsapp.net`, { text: notificationMessage });
+            } catch (msgErr) {
+                console.error("Failed to route onboarding visual template via chat:", msgErr.message);
             }
         }
     });
 
-    // Event routing hook directly forwarding payload arrays to router layer
-    sock.ev.on('messages.upsert', async (chatUpdate) => {
-        if (fs.existsSync(routerPath)) {
-            const { routeMessagePipeline } = await import(`${routerPath}?update=${Date.now()}`);
-            routeMessagePipeline(sock, chatUpdate, SERVER_ID, botId, cachePath);
-        }
-    });
-
-    // Intercept update actions and route straight into targeted external observers directory
-    sock.ev.on('messages.update', async (messageUpdates) => {
-        const observerFile = path.join(__dirname, 'observers', 'antiDelete.js');
-        if (fs.existsSync(observerFile)) {
-            const { runAntiDeleteObserver } = await import(`${observerFile}?update=${Date.now()}`);
-            runAntiDeleteObserver(sock, messageUpdates, SERVER_ID, botId);
-        }
+    sock.ev.on("creds.update", async () => {
+        await saveCreds();
+        await syncSessionToCloud(state.creds);
     });
 }
 
-/**
- * Core Initialization System Task
- * Invoked automatically upon Render framework launch signals
- */
-function synchronizeClusterNode() {
-    console.log(`[Cluster Startup] Initializing local standalone engine assigned to cluster profile: ${SERVER_ID}`);
-
-    if (fs.existsSync(SESSION_FILE_PATH)) {
-        try {
-            const rawFileData = fs.readFileSync(SESSION_FILE_PATH, 'utf-8');
-            const parsedData = JSON.parse(rawFileData, BufferJSON.reviver);
-            if (parsedData && parsedData.botId) {
-                console.log(`[Cluster Startup] Active local configuration found for ${parsedData.botId}. Booting instance...`);
-                startBotInstance(parsedData.botId, false);
-            }
-        } catch (err) {
-            console.error('[Cluster Startup Fatal] Failed to read cached registration session:', err.message);
+// ================= EXTERNAL HOOK FOR SOCKETS ROUTER ENGINE =================
+if (fs.existsSync(path.join(__dirname, "socket", "socket.js"))) {
+    try {
+        const { bindSocketRoutingEngine } = require("./socket/socket.js");
+        if (typeof bindSocketRoutingEngine === "function") {
+            bindSocketRoutingEngine(io, startBunnyEngine, global.clientId, 1, supabase);
         }
-    } else {
-        console.log('[Cluster Startup] Zero operational bot instances configured for this local node target ID.');
+    } catch (sockFileErr) {
+        console.log("Socket system integration pending setup configuration:", sockFileErr.message);
     }
 }
 
-// WebSocket connection broker layer linking index process tasks directly to folder files
-if (fs.existsSync(path.join(__dirname, 'socket', 'socket.js'))) {
-    import('./socket/socket.js').then(({ bindSocketRoutingEngine }) => {
-        bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT_CONNECTIONS);
-    });
-}
-
-// Start Express Listener and trigger cluster discovery execution loops
 server.listen(PORT, () => {
-    console.log(`[Server Core] Engine running on public dynamic web port allocation [:${PORT}]`);
-    synchronizeClusterNode();
+    console.log(`🚀 ${global.botName} running seamlessly on allocation port [:${PORT}]`);
+    startBunnyEngine();
 });
 
-// Process isolation crash safeguards keeping instances secure
-process.on('uncaughtException', (err) => {
-    console.error('[Critical Engine Catch] System runtime error detected safely: ', err.message);
-});
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('[Unhandled Promise Guard] Rejected promise event mitigated safely at: ', reason);
-});
+// ================= ISOLATION SAFEGUARDS =================
+process.on("uncaughtException", (err) => console.error("Caught exception layer mitigation: ", err));
+process.on("unhandledRejection", (reason, promise) => console.error("Unhandled Rejection handled:", reason));
+            
