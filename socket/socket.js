@@ -1,194 +1,155 @@
 const {
     default: makeWASocket,
     DisconnectReason,
-    BufferJSON
+    useMultiFileAuthState,
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const QRCode = require("qrcode");
-
-// Mfumo wa kutengeneza Pristine Credentials kienyeji kwa Baileys ya zamani
-const initAuthCreds = () => {
-    return {
-        noiseKey: Crypto.generateKeyPair(),
-        signedIdentityKey: Crypto.generateKeyPair(),
-        signedPreKey: Crypto.generateKeyPair(),
-        registrationId: Math.floor(Math.random() * 16384) + 1,
-        advSecretKey: Buffer.alloc(32).toString('base64'),
-        nextPreKeyId: 1,
-        firstUnuploadedPreKeyId: 1,
-        accountSettings: { unarchiveChats: false },
-        myAppStateKeyId: null
-    };
-};
-
-// Kwa sababu initAuthCreds haipo direct exported kwenye Baileys ya zamani, tunatumia Crypto au backup ya vitu vya msingi vya Baileys
-const Crypto = require("@whiskeysockets/baileys/lib/Utils/crypto");
+const path = require("path");
+const fs = require("fs");
 
 /**
  * Binds the WebSocket Routing Engine to the main Express HTTP Server
  * Handles secure connection handshakes, pairing requests, and auto-updating QR codes
- * Powered entirely by CommonJS for Bunny MD Architecture
  */
 function bindSocketRoutingEngine(io, startBotInstance, CLIENT_ID, MAX_BOT_CONNECTIONS) {
+
+    const activeSessions = new Map();
 
     io.on('connection', (socket) => {
         console.log(`[Socket Session] New frontend client linked: ${socket.id}`);
 
-        // Track active connection process for this specific socket session to prevent leaks
         let currentSock = null;
+        let sessionId = null;
 
-        /**
-         * Triggered when a user requests initialization (either QR or Pairing Code) from pair.html
-         */
         socket.on('requestPairing', async (payload) => {
-            const { phoneNumber, method } = payload; // method can be 'qr' or 'pairingCode'
-
-            // Clean phone number format if provided
+            const { phoneNumber, method } = payload;
             const cleanNumber = phoneNumber ? phoneNumber.replace(/[^0-9]/g, '') : null;
 
             if (method === 'pairingCode' && !cleanNumber) {
-                return socket.emit('error', { message: 'A valid WhatsApp phone number is strictly required for pairing code authentication.' });
+                return socket.emit('error', { message: 'Phone number required for pairing code.' });
             }
 
-            const botId = cleanNumber ? `${cleanNumber}:0` : null;
+            // Prevent duplicate sessions per socket
+            if (activeSessions.has(socket.id)) {
+                return socket.emit('error', { message: 'Session already active. Refresh page.' });
+            }
 
             try {
-                // Safely clear old socket instance before opening a new stream pipeline
-                if (currentSock) {
-                    try { 
-                        currentSock.ev.removeAllListeners('connection.update');
-                        currentSock.end(); 
-                    } catch (_) {}
-                }
+                sessionId = `pair_${socket.id}_${Date.now()}`;
+                const sessionPath = path.join(__dirname, '..', 'temp_session', sessionId);
 
-                console.log(`[Socket Engine] Initializing WhatsApp instance via [${method}] for Standalone Bunny MD Node`);
+                if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
 
-                // Pure In-Memory Authentication Mappings (Completely independent init)
-                const { initAuthCreds: baileysInitCreds } = require("@whiskeysockets/baileys/lib/Utils/auth-utils");
-                const pristineCreds = baileysInitCreds ? baileysInitCreds() : initAuthCreds();
-                
-                const ephemeralAuthState = {
-                    creds: pristineCreds,
-                    keys: {
-                        get: (type, ids) => {
-                            const data = {};
-                            for (const id of ids) {
-                                data[id] = pristineCreds[type]?.[id];
-                            }
-                            return data;
-                        },
-                        set: (data) => {
-                            for (const type in data) {
-                                for (const id in data[type]) {
-                                    if (!pristineCreds[type]) pristineCreds[type] = {};
-                                    if (data[type][id] === null) {
-                                        delete pristineCreds[type][id];
-                                    } else {
-                                        pristineCreds[type][id] = data[type][id];
-                                    }
-                                }
-                            }
-                        }
-                    }
-                };
+                const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+                const { version } = await fetchLatestBaileysVersion();
 
-                // Initialize core parameters utilizing fully hardened browser identity string masks
                 currentSock = makeWASocket({
+                    version,
                     auth: {
-                        creds: ephemeralAuthState.creds,
-                        keys: ephemeralAuthState.keys
+                        creds: state.creds,
+                        keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }))
                     },
                     printQRInTerminal: false,
                     logger: pino({ level: 'silent' }),
                     browser: ['Bunny MD Setup', 'Chrome', '20.0.0']
                 });
 
-                // Request pairing sequence if explicitly specified by user layout choice
+                activeSessions.set(socket.id, { sock: currentSock, path: sessionPath });
+
+                // Pairing code flow
                 if (method === 'pairingCode' && cleanNumber) {
                     setTimeout(async () => {
                         try {
-                            const pairingCode = await currentSock.requestPairingCode(cleanNumber);
-                            socket.emit('pairingCodeResponse', { code: pairingCode });
-                        } catch (pairingReqError) {
-                            console.error('[Socket Engine Error] WhatsApp pairing request rejected:', pairingReqError.message);
-                            socket.emit('error', { message: 'Failed to fetch pairing code from WhatsApp servers. Try again.' });
+                            if (!currentSock.authState.creds.registered) {
+                                const code = await currentSock.requestPairingCode(cleanNumber);
+                                socket.emit('pairingCodeResponse', { code: code.match(/.{1,4}/g).join('-') });
+                            }
+                        } catch (err) {
+                            console.error('[Pairing Error]:', err.message);
+                            socket.emit('error', { message: 'Failed to get pairing code. Try again.' });
                         }
-                    }, 3000);
+                    }, 2000);
                 }
 
-                currentSock.ev.on('creds.update', () => {
-                    // Volatile engine updates state automatically
-                });
+                currentSock.ev.on('creds.update', saveCreds);
 
                 currentSock.ev.on('connection.update', async (update) => {
                     const { connection, lastDisconnect, qr } = update;
 
-                    // Converts raw QR string to Base64 DataURL image string before broadcasting to frontend UI
                     if (qr && method === 'qr') {
                         try {
-                            console.log(`[Socket Engine] Generating QR Image Matrix for client: ${socket.id}`);
                             const qrImageUrl = await QRCode.toDataURL(qr);
-                            socket.emit('qr', qrImageUrl); // Classic VEX core bridge broadcast
-                            socket.emit('qrCodeResponse', { qr: qrImageUrl }); // pair.html hook compatibility
-                        } catch (qrGenErr) {
-                            console.error('[QR Engine Error] Failed to compile matrix to base64 image:', qrGenErr.message);
+                            socket.emit('qr', qrImageUrl);
+                            socket.emit('qrCodeResponse', { qr: qrImageUrl });
+                        } catch (err) {
+                            console.error('[QR Error]:', err.message);
                         }
                     }
 
                     if (connection === 'open') {
-                        const finalBotId = botId || `${currentSock.user.id.split(':')[0]}:0`;
-                        const authenticatedNumber = finalBotId.split(':')[0];
+                        const userId = currentSock.user.id;
+                        const number = userId.split(':')[0];
+                        console.log(`[Handshake Success] ${number} authenticated`);
 
-                        console.log(`[Handshake Success] ${authenticatedNumber} safely authenticated 100% in memory!`);
-
-                        // COMPACT BASE64 BLOCK SYNC
-                        const cloudPackData = JSON.stringify(ephemeralAuthState.creds, BufferJSON.replacer);
-
-                        // Broadcast success event confirmation back to UI layers
-                        socket.emit('connected'); // Classic VEX broadcast
+                        socket.emit('connected');
                         socket.emit('pairingSuccess', { 
-                            message: 'Bunny MD connected successfully! Check your WhatsApp chat for initialization reports.',
-                            sessionCreds: cloudPackData
+                            message: 'Bunny MD connected successfully!',
+                            number: number
                         });
 
-                        // Kill local registration listeners and pass execution tasks over to main index process cluster loop
-                        currentSock.ev.removeAllListeners('connection.update');
-                        currentSock = null;
+                        // Cleanup temp session and handoff to main engine
+                        currentSock.ev.removeAllListeners();
+                        currentSock.end();
                         
-                        // Pass to index.js main engine runner directly with credentials included
-                        await startBotInstance(finalBotId, true, ephemeralAuthState.creds);
+                        activeSessions.delete(socket.id);
+                        
+                        // Pass to main engine - it will load from session folder
+                        await startBotInstance(number, true, null);
+
+                        // Delete temp folder after handoff
+                        setTimeout(() => {
+                            fs.rmSync(sessionPath, { recursive: true, force: true });
+                        }, 5000);
                     }
 
                     if (connection === 'close') {
-                        const reason = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode;
-                        console.log(`[Socket Engine Connection] Registration lifecycle closed. Reason code: ${reason}`);
-
-                        if (reason === 515 || reason === DisconnectReason.restartRequired) {
-                            console.log(`[Socket Engine Balance] Internal hot-restart signaled by WhatsApp network. Keeping stream pipeline warm.`);
-                            return; 
-                        }
+                        const reason = lastDisconnect?.error?.output?.statusCode;
+                        console.log(`[Socket Connection Closed] Reason: ${reason}`);
 
                         if (reason === DisconnectReason.loggedOut) {
-                            socket.emit('error', { message: 'Device pairing initialization was rejected or logged out.' });
+                            socket.emit('error', { message: 'Device logged out or pairing failed.' });
                         }
+                        
+                        cleanupSession(socket.id);
                     }
                 });
 
-            } catch (fatalSocketErr) {
-                console.error('[Socket Engine Fatal] Registration handler crashed:', fatalSocketErr.message);
-                socket.emit('error', { message: 'Internal infrastructure error occurred during device handshake execution.' });
+            } catch (err) {
+                console.error('[Socket Fatal Error]:', err.message);
+                socket.emit('error', { message: 'Internal error during handshake.' });
+                cleanupSession(socket.id);
             }
         });
 
-        // Fixed frontend disconnect logic to avoid blowing up active handshake registration flows
-        socket.on('disconnect', () => {
-            console.log(`[Socket Session] Client socket pipeline disconnected: ${socket.id}`);
-            if (currentSock) {
+        function cleanupSession(id) {
+            const session = activeSessions.get(id);
+            if (session) {
                 try {
-                    currentSock.ev.removeAllListeners('connection.update');
+                    session.sock?.ev.removeAllListeners();
+                    session.sock?.end();
+                    fs.rmSync(session.path, { recursive: true, force: true });
                 } catch (_) {}
-                currentSock = null;
+                activeSessions.delete(id);
             }
+            currentSock = null;
+        }
+
+        socket.on('disconnect', () => {
+            console.log(`[Socket Session] Disconnected: ${socket.id}`);
+            cleanupSession(socket.id);
         });
     });
 }
