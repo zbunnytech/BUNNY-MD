@@ -4,6 +4,7 @@ import makeWASocket, {
     BufferJSON
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
+import QRCode from 'qrcode';
 
 /**
  * Binds the WebSocket Routing Engine to the main Express HTTP Server
@@ -116,10 +117,15 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
                 currentSock.ev.on('connection.update', async (update) => {
                     const { connection, lastDisconnect, qr } = update;
 
-                    // Intercept and pipe auto-updating QR Code strings directly to front-end rendering logic
+                    // Converts raw QR string to Base64 DataURL image string before broadcasting to frontend UI
                     if (qr && method === 'qr') {
-                        console.log(`[Socket Engine] Auto-updating QR Code broadcasted for client: ${socket.id}`);
-                        socket.emit('qrCodeResponse', { qr });
+                        try {
+                            console.log(`[Socket Engine] Generating QR Image Matrix for client: ${socket.id}`);
+                            const qrImageUrl = await QRCode.toDataURL(qr);
+                            socket.emit('qrCodeResponse', { qr: qrImageUrl });
+                        } catch (qrGenErr) {
+                            console.error('[QR Engine Error] Failed to compile matrix to base64 image:', qrGenErr.message);
+                        }
                     }
 
                     if (connection === 'open') {
@@ -191,5 +197,5 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
             }
         });
     });
-                                        }
-                            
+                                            }
+                              
