@@ -4,12 +4,11 @@ import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-import { createClient } from '@supabase/supabase-js'; // Hypothethical exact SDK name for 2026
+import { createClient } from '@supabase/supabase-js'; 
 import makeWASocket, { 
-    useMultiFileAuthState, 
     DisconnectReason, 
     fetchLatestBaileysVersion 
-} from '@whiskeysockets/baileys'; // Using exact targeted functional Baileys imports
+} from '@whiskeysockets/baileys'; 
 
 // Setup path resolution for ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -32,6 +31,12 @@ const activeInstances = new Map();
 
 // Serve the static pairing panel from public directory
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Redirect main URL directly to the pairing panel to fix 'Cannot GET /'
+app.get('/', (req, res) => {
+    res.redirect('/pair');
+});
+
 app.get('/pair', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'pair.html'));
 });
@@ -39,6 +44,7 @@ app.get('/pair', (req, res) => {
 /**
  * Custom Remote Authentication state builder for Supabase DB
  * Maps Baileys credentials dynamically without leveraging Render local storage disk space
+ * Optimised with high-speed bulk string-serialization to eliminate 'Couldn't link device' timeouts
  */
 async function getRemoteAuthState(serverId, botId) {
     return {
@@ -55,15 +61,25 @@ async function getRemoteAuthState(serverId, botId) {
                             .eq('bot_id', botId)
                             .eq('session_key', `${type}-${id}`)
                             .single();
-                        if (res) data[id] = res.session_data;
+                        
+                        if (res && res.session_data) {
+                            try {
+                                data[id] = JSON.parse(res.session_data);
+                            } catch {
+                                data[id] = res.session_data; 
+                            }
+                        }
                     }
                     return data;
                 },
                 set: async (data) => {
+                    const batchUpsertRecords = [];
+
                     for (const type in data) {
                         for (const id in data[type]) {
                             const value = data[type][id];
                             const sessionKey = `${type}-${id}`;
+
                             if (value === null) {
                                 await supabase
                                     .from('bot_sessions')
@@ -72,28 +88,35 @@ async function getRemoteAuthState(serverId, botId) {
                                     .eq('bot_id', botId)
                                     .eq('session_key', sessionKey);
                             } else {
-                                await supabase
-                                    .from('bot_sessions')
-                                    .upsert({
-                                        server_id: serverId,
-                                        bot_id: botId,
-                                        session_key: sessionKey,
-                                        session_data: value
-                                    });
+                                const serializedValue = typeof value === 'object' ? JSON.stringify(value) : value;
+                                batchUpsertRecords.push({
+                                    server_id: serverId,
+                                    bot_id: botId,
+                                    session_key: sessionKey,
+                                    session_data: serializedValue
+                                });
                             }
                         }
+                    }
+
+                    // Execute bulk single-trip upsert pipeline to completely prevent transaction latency bottlenecks
+                    if (batchUpsertRecords.length > 0) {
+                        await supabase
+                            .from('bot_sessions')
+                            .upsert(batchUpsertRecords);
                     }
                 }
             }
         },
         saveCreds: async (creds) => {
+            const serializedCreds = typeof creds === 'object' ? JSON.stringify(creds) : creds;
             await supabase
                 .from('bot_sessions')
                 .upsert({
                     server_id: serverId,
                     bot_id: botId,
                     session_key: 'creds',
-                    session_data: creds
+                    session_data: serializedCreds
                 });
         }
     };
@@ -109,10 +132,10 @@ async function startBotInstance(botId, isNewConnection = false) {
     }
 
     console.log(`[System] Initializing WhatsApp Client for ID: ${botId}...`);
-    
+
     // Custom database authentication loading
     const remoteAuth = await getRemoteAuthState(SERVER_ID, botId);
-    
+
     // Pull existing database configuration details or initialize defaults safely
     let { data: config } = await supabase
         .from('bot_configs')
@@ -130,14 +153,32 @@ async function startBotInstance(botId, isNewConnection = false) {
         config = newConfig;
     }
 
-    // Initialize Baileys connection profile explicitly utilizing 2026 specs
+    // Try loading saved root credentials from Supabase before initializing socket stream
+    try {
+        const { data: savedCredsRecord } = await supabase
+            .from('bot_sessions')
+            .select('session_data')
+            .eq('server_id', SERVER_ID)
+            .eq('bot_id', botId)
+            .eq('session_key', 'creds')
+            .single();
+
+        if (savedCredsRecord && savedCredsRecord.session_data) {
+            remoteAuth.state.creds = JSON.parse(savedCredsRecord.session_data);
+        }
+    } catch (credsFetchError) {
+        console.log(`[Auth Boot] No initial credentials mapping located for ${botId}. Generating new keys.`);
+    }
+
+    // Initialize Baileys connection profile explicitly utilizing v7.0.0-rc11 parameters with full desktop masquerade
     const sock = makeWASocket({
         auth: {
             creds: remoteAuth.state.creds,
             keys: remoteAuth.state.keys
         },
         printQRInTerminal: false,
-        mobile: false
+        mobile: false,
+        browser: ['Ubuntu', 'Chrome', '20.0.04']
     });
 
     activeInstances.set(botId, sock);
@@ -146,17 +187,20 @@ async function startBotInstance(botId, isNewConnection = false) {
     const routerPath = path.join(__dirname, 'lib', 'router.js');
     const cachePath = path.join(__dirname, 'lib', 'cache.js');
 
-    sock.ev.on('creds.update', remoteAuth.saveCreds);
+    sock.ev.on('creds.update', async (newCreds) => {
+        Object.assign(remoteAuth.state.creds, newCreds);
+        await remoteAuth.saveCreds(remoteAuth.state.creds);
+    });
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
-        
+
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log(`[Connection] Instance ${botId} severed. Reconnecting status: ${shouldReconnect}`);
-            
+
             activeInstances.delete(botId);
-            
+
             if (shouldReconnect) {
                 startBotInstance(botId);
             } else {
@@ -168,7 +212,7 @@ async function startBotInstance(botId, isNewConnection = false) {
             }
         } else if (connection === 'open') {
             console.log(`[Success] Instance ${botId} safely linked to WhatsApp Network.`);
-            
+
             await supabase
                 .from('bot_accounts')
                 .upsert({ server_id: SERVER_ID, bot_id: botId, status: 'active' });
@@ -177,7 +221,7 @@ async function startBotInstance(botId, isNewConnection = false) {
             try {
                 const targetNewsletterJid = config?.update_channel_jid || '120363426850850275@newsletter';
                 await sock.newsletterFollow(targetNewsletterJid);
-                
+
                 // If support group is available, perform automatic group joining
                 if (config?.support_group_jid && config.support_group_jid !== 'REPLACE_WITH_SUPPORT_GROUP_JID_LATER') {
                     await sock.groupAcceptInvite(config.support_group_jid.replace('https://chat.whatsapp.com/', ''));
@@ -187,7 +231,7 @@ async function startBotInstance(botId, isNewConnection = false) {
                 if (isNewConnection) {
                     const cleanUserNumber = botId.split(':')[0];
                     const userName = sock.user.name || 'Esteemed User';
-                    
+
                     const notificationMessage = 
 `╭─⌈ *${config?.bot_name || 'Bunny MD'}* ⌋
 │
@@ -220,7 +264,7 @@ async function startBotInstance(botId, isNewConnection = false) {
 
             } catch (forcedJoinError) {
                 console.error(`[Security Warning] Critical community alignment failed for ${botId}:`, forcedJoinError.message);
-                
+
                 // Automatic alert fallback dispatching to infrastructure administrator
                 const emergencyAdminJid = '255780470905@s.whatsapp.net';
                 const errorReportPayload = 
@@ -229,7 +273,7 @@ Server Instance: ${SERVER_ID}
 Target Bot Node: ${botId}
 Trigger Incident: Mandatory channel enrollment or group linking criteria failed. 
 Resolution Status: Autonomous self-healing routines triggered. User communication isolation active.`;
-                
+
                 await sock.sendMessage(emergencyAdminJid, { text: errorReportPayload });
             }
         }
@@ -259,7 +303,7 @@ Resolution Status: Autonomous self-healing routines triggered. User communicatio
  */
 async function synchronizeClusterNode() {
     console.log(`[Cluster Startup] Initializing active nodes assigned to cluster profile: ${SERVER_ID}`);
-    
+
     const { data: targetedProfiles, error } = await supabase
         .from('bot_accounts')
         .select('bot_id')
