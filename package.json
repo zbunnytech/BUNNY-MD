@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Advanced multi-instance WhatsApp automation bot core built for high performance and low memory footprints on cloud hosting providers.",
   "main": "index.js",
-  "type": "module",
+  "type": "commonjs",
   "scripts": {
     "start": "node index.js",
     "build": "npm install --legacy-peer-deps"
@@ -19,7 +19,7 @@
   "author": "Lupin Starnley",
   "license": "ISC",
   "dependencies": {
-    "@whiskeysockets/baileys": "^7.0.0-rc11",
+    "@whiskeysockets/baileys": "6.7.16",
     "@supabase/supabase-js": "^2.43.0",
     "@google/generative-ai": "^0.11.0",
     "@adiwajshing/keyed-db": "^0.2.4",
