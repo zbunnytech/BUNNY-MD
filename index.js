@@ -4,7 +4,6 @@ import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-import { createClient } from '@supabase/supabase-js'; 
 import makeWASocket, { 
     DisconnectReason, 
     BufferJSON
@@ -21,13 +20,21 @@ const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
 const SERVER_ID = process.env.SERVER_ID || 'Render_Alpha';
-const MAX_BOT_CONNECTIONS = parseInt(process.env.MAX_BOT_CONNECTIONS || '3', 10);
+const MAX_BOT_CONNECTIONS = 1; // Locked for a single standalone user profile
 
-// Initialize Supabase Client Connection
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+// Local static configuration profile mapping (Bypassing Supabase completely)
+const localConfig = {
+    bot_name: 'Bunny MD',
+    bot_footer: 'Powered by Bunny Tech',
+    prefix: '.',
+    owner_name: 'Lupin Starnley',
+    bot_pic: 'https://i.ibb.co/LDMjMYyy/file-00000000855c71f89fb70f5f8bebc2b2.png',
+    update_channel_jid: '120363426850850275@newsletter'
+};
 
 // Cache tracking system to prevent high RAM consumption
 const activeInstances = new Map();
+const SESSION_FILE_PATH = path.join(__dirname, 'session.json');
 
 // Serve the static pairing panel from public directory
 app.use(express.static(path.join(__dirname, 'public')));
@@ -42,31 +49,39 @@ app.get('/pair', (req, res) => {
 });
 
 /**
- * Highly Stable Hybrid Authentication state builder for Supabase DB
- * Optimized to reconstruct pure Base64 Cloud Master Credits directly in-memory
- * This mimics the classic simple approach preventing database write bottlenecks and 401 errors
+ * Main Orchestrator to spin up a single dynamic WhatsApp Bot Instance
+ * Powered entirely via Pristine Local Disk/RAM Sessions
  */
-async function getRemoteAuthState(serverId, botId) {
-    let masterCreds = {};
-
-    try {
-        const { data: res } = await supabase
-            .from('bot_sessions')
-            .select('session_data')
-            .eq('server_id', serverId)
-            .eq('bot_id', botId)
-            .eq('session_key', 'master_creds')
-            .single();
-
-        if (res && res.session_data) {
-            // Parse using BufferJSON to natively restore keys and buffers properly
-            masterCreds = JSON.parse(res.session_data, BufferJSON.reviver);
-        }
-    } catch {
-        console.log(`[Auth Profile] Generating pristine session mappings for Node: ${botId}`);
+async function startBotInstance(botId, isNewConnection = false, injectedCreds = null) {
+    if (activeInstances.has(botId)) {
+        console.log(`[System] Instance ${botId} already running.`);
+        return;
     }
 
-    // Ephemeral Runtime State Bridge mirroring socket memory architecture
+    console.log(`[System] Initializing Standalone WhatsApp Client for ID: ${botId}...`);
+
+    let masterCreds = {};
+
+    // 1. Resolve Credentials mapping either from Direct Socket injection or Local Storage file
+    if (injectedCreds) {
+        masterCreds = injectedCreds;
+        // Back up to local storage instantly to guarantee seamless standalone restarts
+        fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify({ botId, creds: masterCreds }, BufferJSON.replacer));
+    } else if (fs.existsSync(SESSION_FILE_PATH)) {
+        try {
+            const rawFileData = fs.readFileSync(SESSION_FILE_PATH, 'utf-8');
+            const parsedData = JSON.parse(rawFileData, BufferJSON.reviver);
+            masterCreds = parsedData.creds;
+        } catch (err) {
+            console.error('[Auth Profile] Local file corruption detected. Awaiting secure pairing setup:', err.message);
+            return;
+        }
+    } else {
+        console.log(`[Auth Profile] Pristine state setup tracking active. Manual setup required via web portal.`);
+        return;
+    }
+
+    // Ephemeral Runtime State Bridge matching Baileys internal keys tracker
     const memoryAuthState = {
         creds: masterCreds,
         keys: {
@@ -92,58 +107,11 @@ async function getRemoteAuthState(serverId, botId) {
         }
     };
 
-    return {
-        state: memoryAuthState,
-        saveCreds: async () => {
-            const cloudPackData = JSON.stringify(memoryAuthState.creds, BufferJSON.replacer);
-            await supabase
-                .from('bot_sessions')
-                .upsert({
-                    server_id: serverId,
-                    bot_id: botId,
-                    session_key: 'master_creds',
-                    session_data: cloudPackData
-                });
-        }
-    };
-}
-
-/**
- * Main Orchestrator to spin up a single dynamic WhatsApp Bot Instance
- */
-async function startBotInstance(botId, isNewConnection = false) {
-    if (activeInstances.has(botId)) {
-        console.log(`[System] Instance ${botId} already running.`);
-        return;
-    }
-
-    console.log(`[System] Initializing WhatsApp Client for ID: ${botId}...`);
-
-    // Load optimized hybrid authentication maps
-    const remoteAuth = await getRemoteAuthState(SERVER_ID, botId);
-
-    // Pull existing database configuration details or initialize defaults safely
-    let { data: config } = await supabase
-        .from('bot_configs')
-        .select('*')
-        .eq('server_id', SERVER_ID)
-        .eq('bot_id', botId)
-        .single();
-
-    if (!config && isNewConnection) {
-        const { data: newConfig } = await supabase
-            .from('bot_configs')
-            .insert([{ server_id: SERVER_ID, bot_id: botId }])
-            .select()
-            .single();
-        config = newConfig;
-    }
-
     // Initialize Baileys connection profile explicitly utilizing stable memory structures with desktop masquerade
     const sock = makeWASocket({
         auth: {
-            creds: remoteAuth.state.creds,
-            keys: remoteAuth.state.keys
+            creds: memoryAuthState.creds,
+            keys: memoryAuthState.keys
         },
         printQRInTerminal: false,
         mobile: false,
@@ -156,8 +124,9 @@ async function startBotInstance(botId, isNewConnection = false) {
     const routerPath = path.join(__dirname, 'lib', 'router.js');
     const cachePath = path.join(__dirname, 'lib', 'cache.js');
 
-    sock.ev.on('creds.update', async () => {
-        await remoteAuth.saveCreds();
+    sock.ev.on('creds.update', () => {
+        // Automatically save updated session keys straight into local host partition
+        fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify({ botId, creds: memoryAuthState.creds }, BufferJSON.replacer));
     });
 
     sock.ev.on('connection.update', async (update) => {
@@ -180,37 +149,21 @@ async function startBotInstance(botId, isNewConnection = false) {
             if (shouldReconnect) {
                 startBotInstance(botId);
             } else {
-                await supabase
-                    .from('bot_accounts')
-                    .update({ status: 'inactive' })
-                    .eq('server_id', SERVER_ID)
-                    .eq('bot_id', botId);
-                
-                await supabase
-                    .from('bot_sessions')
-                    .delete()
-                    .eq('server_id', SERVER_ID)
-                    .eq('bot_id', botId);
+                console.log(`[Connection Warning] Global Logout detected. Clearing out session files completely.`);
+                if (fs.existsSync(SESSION_FILE_PATH)) {
+                    fs.unlinkSync(SESSION_FILE_PATH);
+                }
             }
         } else if (connection === 'open') {
-            console.log(`[Success] Instance ${botId} safely linked to WhatsApp Network.`);
+            console.log(`[Success] Standalone Instance ${botId} safely linked to WhatsApp Network.`);
 
-            await supabase
-                .from('bot_accounts')
-                .upsert({ server_id: SERVER_ID, bot_id: botId, status: 'active' });
-
-            // Automatically back up initial setup sync to avoid registration gaps
-            await remoteAuth.saveCreds();
+            // Backup active setup sync to avoid registration gaps
+            fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify({ botId, creds: memoryAuthState.creds }, BufferJSON.replacer));
 
             // Execution sequence for required channel integration rules
             try {
-                const targetNewsletterJid = config?.update_channel_jid || '120363426850850275@newsletter';
+                const targetNewsletterJid = localConfig.update_channel_jid;
                 await sock.newsletterFollow(targetNewsletterJid);
-
-                // If support group is available, perform automatic group joining
-                if (config?.support_group_jid && config.support_group_jid !== 'REPLACE_WITH_SUPPORT_GROUP_JID_LATER') {
-                    await sock.groupAcceptInvite(config.support_group_jid.replace('https://chat.whatsapp.com/', ''));
-                }
 
                 // Push success notification layout upon onboarding validation
                 if (isNewConnection) {
@@ -218,29 +171,29 @@ async function startBotInstance(botId, isNewConnection = false) {
                     const userName = sock.user.name || 'Esteemed User';
 
                     const notificationMessage = 
-`╭─⌈ *${config?.bot_name || 'Bunny MD'}* ⌋
+`╭─⌈ *${localConfig.bot_name}* ⌋
 │
 │ Hello ${userName}, dynamic system onboarding has completed successfully.
-│ Your automation instance is now active and fully protected by cloud memory.
+│ Your automation instance is now active and fully protected by local memory.
 │
-╰⊷ \`\`\`${config?.bot_footer || 'Powered by Bunny Tech'}\`\`\`
+╰⊷ \`\`\`${localConfig.bot_footer}\`\`\`
 
 ╭─⌈ *CONFIGURATION OVERVIEW* ⌋
 │
-╰⊷ Prefix Strategy: \`\`\`${config?.prefix || '.'}\`\`\`
-╰⊷ System Persona: *${config?.bot_name || 'Bunny MD'}*
-╰⊷ Core Architect: *${config?.owner_name || 'Lupin Starnley'}*
+╰⊷ Prefix Strategy: \`\`\`${localConfig.prefix}\`\`\`
+╰⊷ System Persona: *${localConfig.bot_name}*
+╰⊷ Core Architect: *${localConfig.owner_name}*
 │
-╰⊷ _Type *${config?.prefix || '.'}menu* inside any conversation to view features._`;
+╰⊷ _Type *${localConfig.prefix}menu* inside any conversation to view features._`;
 
                     await sock.sendMessage(`${cleanUserNumber}@s.whatsapp.net`, { 
                         text: notificationMessage,
                         contextInfo: {
                             externalAdReply: {
-                                title: config?.bot_name || 'Bunny MD',
-                                body: config?.bot_footer || 'Powered by Bunny Tech',
+                                title: localConfig.bot_name,
+                                body: localConfig.bot_footer,
                                 previewType: 'PHOTO',
-                                thumbnailURL: config?.bot_pic || 'https://i.ibb.co/LDMjMYyy/file-00000000855c71f89fb70f5f8bebc2b2.png',
+                                thumbnailURL: localConfig.bot_pic,
                                 sourceUrl: 'https://bunny-bot.mooo.com/pair'
                             }
                         }
@@ -249,17 +202,6 @@ async function startBotInstance(botId, isNewConnection = false) {
 
             } catch (forcedJoinError) {
                 console.error(`[Security Warning] Critical community alignment failed for ${botId}:`, forcedJoinError.message);
-
-                // Automatic alert fallback dispatching to infrastructure administrator
-                const emergencyAdminJid = '255780470905@s.whatsapp.net';
-                const errorReportPayload = 
-`[INFRASTRUCTURE ALERT]
-Server Instance: ${SERVER_ID}
-Target Bot Node: ${botId}
-Trigger Incident: Mandatory channel enrollment or group linking criteria failed. 
-Resolution Status: Autonomous self-healing routines triggered. User communication isolation active.`;
-
-                await sock.sendMessage(emergencyAdminJid, { text: errorReportPayload });
             }
         }
     });
@@ -286,34 +228,29 @@ Resolution Status: Autonomous self-healing routines triggered. User communicatio
  * Core Initialization System Task
  * Invoked automatically upon Render framework launch signals
  */
-async function synchronizeClusterNode() {
-    console.log(`[Cluster Startup] Initializing active nodes assigned to cluster profile: ${SERVER_ID}`);
+function synchronizeClusterNode() {
+    console.log(`[Cluster Startup] Initializing local standalone engine assigned to cluster profile: ${SERVER_ID}`);
 
-    const { data: targetedProfiles, error } = await supabase
-        .from('bot_accounts')
-        .select('bot_id')
-        .eq('server_id', SERVER_ID)
-        .eq('status', 'active');
-
-    if (error) {
-        console.error('[Database Fatal] Context collection rejected by Cloud Supabase Engine:', error.message);
-        return;
-    }
-
-    if (targetedProfiles && targetedProfiles.length > 0) {
-        const deploymentQueue = targetedProfiles.slice(0, MAX_BOT_CONNECTIONS);
-        for (const record of deploymentQueue) {
-            await startBotInstance(record.bot_id, false);
+    if (fs.existsSync(SESSION_FILE_PATH)) {
+        try {
+            const rawFileData = fs.readFileSync(SESSION_FILE_PATH, 'utf-8');
+            const parsedData = JSON.parse(rawFileData, BufferJSON.reviver);
+            if (parsedData && parsedData.botId) {
+                console.log(`[Cluster Startup] Active local configuration found for ${parsedData.botId}. Booting instance...`);
+                startBotInstance(parsedData.botId, false);
+            }
+        } catch (err) {
+            console.error('[Cluster Startup Fatal] Failed to read cached registration session:', err.message);
         }
     } else {
-        console.log('[Cluster Startup] Zero operational bot instances configured for this server target ID node.');
+        console.log('[Cluster Startup] Zero operational bot instances configured for this local node target ID.');
     }
 }
 
 // WebSocket connection broker layer linking index process tasks directly to folder files
 if (fs.existsSync(path.join(__dirname, 'socket', 'socket.js'))) {
     import('./socket/socket.js').then(({ bindSocketRoutingEngine }) => {
-        bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT_CONNECTIONS, supabase);
+        bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT_CONNECTIONS);
     });
 }
 
@@ -330,4 +267,3 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.error('[Unhandled Promise Guard] Rejected promise event mitigated safely at: ', reason);
 });
-                        
