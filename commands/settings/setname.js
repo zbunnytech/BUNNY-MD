@@ -1,6 +1,6 @@
 module.exports = { 
-    commandConfig, 
-    executeAutonomousCommand 
+    config: commandConfig, 
+    execute: executeAutonomousCommand 
 };
 
 /**
@@ -8,6 +8,7 @@ module.exports = {
  */
 const commandConfig = {
     name: 'setname',
+    alias: ['botname'],
     category: 'settings',
     description: 'Update the bot name in real-time without restart.'
 };
@@ -15,31 +16,27 @@ const commandConfig = {
 /**
  * Bot Name Update Command Node
  */
-async function executeAutonomousCommand(context) {
-    const { sock, msg, remoteJid, query, supabase, config, isOwner, clientId } = context;
+async function executeAutonomousCommand(ctx) {
+    const { sock, msg, from, state, args, isOwner } = ctx;
 
     try {
         if (!isOwner) {
-            return await sock.sendMessage(remoteJid, {
-                text: 'Access Denied. Only the owner can change settings.'
-            }, { quoted: msg });
+            return await ctx.reply('Access Denied. Only the owner can change settings.');
         }
 
-        if (!query) {
-            return await sock.sendMessage(remoteJid, {
-                text: `Usage: ${config.prefix || '.'}setname <new_name>\nExample: ${config.prefix || '.'}setname Bunny Pro`
-            }, { quoted: msg });
+        const newName = args.join(' ').trim();
+        if (!newName) {
+            return await ctx.reply(`Usage: ${state.prefix}setname <new_name>\nExample: ${state.prefix}setname Bunny Pro`);
         }
 
-        const newName = query.trim();
+        // Update via StateManager - it handles Supabase + realtime
+        const success = await state.updateSetting('bot_name', newName);
+        
+        if (!success) {
+            return await ctx.reply('Failed to update bot name. Check database connection.');
+        }
 
-        await supabase
-            .from('bunny_settings')
-            .update({ extra_data: { current: newName } })
-            .eq('client_id', clientId)
-            .eq('setting_name', 'bot_name');
-
-        await sock.sendMessage(remoteJid, {
+        await sock.sendMessage(from, {
             react: { text: '🐉', key: msg.key }
         });
 
@@ -49,7 +46,7 @@ async function executeAutonomousCommand(context) {
 │ Status: Applied instantly
 ╰⊷ *${newName}*`;
 
-        await sock.sendMessage(remoteJid, { 
+        await sock.sendMessage(from, { 
             text: successPayload 
         }, { 
             quoted: msg 
@@ -57,11 +54,6 @@ async function executeAutonomousCommand(context) {
 
     } catch (commandException) {
         console.error(`[Command Exception] Critical failure inside settings/setname.js execution tree:`, commandException.message);
-        
-        await sock.sendMessage(remoteJid, { 
-            text: `\`\`Failed to update bot name. Check database connection.\`\`` 
-        }, { 
-            quoted: msg 
-        });
+        await ctx.reply('Failed to update bot name. Check database connection.');
     }
 }
