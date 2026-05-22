@@ -1,6 +1,6 @@
 module.exports = { 
-    commandConfig, 
-    executeAutonomousCommand 
+    config: commandConfig, 
+    execute: executeAutonomousCommand 
 };
 
 const { performance } = require('perf_hooks');
@@ -11,6 +11,7 @@ const { performance } = require('perf_hooks');
  */
 const commandConfig = {
     name: 'ping',
+    alias: ['p', 'speed'],
     category: 'general',
     description: 'Measures server connection latency and operational baseline speed metrics.'
 };
@@ -19,11 +20,12 @@ const commandConfig = {
  * Advanced High-Performance Ping Command Node
  * Custom styled with rounded corners and localized database typography
  */
-async function executeAutonomousCommand(context) {
-    const { sock, msg, remoteJid, config } = context;
+async function executeAutonomousCommand(ctx) {
+    const { sock, msg, from, state } = ctx;
 
     try {
-        await sock.sendMessage(remoteJid, {
+        // Reaction
+        await sock.sendMessage(from, {
             react: {
                 text: '🦸',
                 key: msg.key
@@ -33,17 +35,16 @@ async function executeAutonomousCommand(context) {
         const executionStartTimestamp = performance.now();
         const processingBaseline = 1 + 1; 
         const executionEndTimestamp = performance.now();
-        
-        const serverLatencyMs = (executionEndTimestamp - executionStartTimestamp).toFixed(0);
 
-        const activeBotIdentityName = config.bot_name || 'Bunny MD';
+        const serverLatencyMs = (executionEndTimestamp - executionStartTimestamp).toFixed(0);
+        const activeBotIdentityName = state.botName || 'Bunny MD';
 
         const dynamicPingPayload = 
 `╭─⌈ ⚡ *${activeBotIdentityName}* ⌋
 │ ${serverLatencyMs}ms [█████████▒]
 ╰⊷ *${activeBotIdentityName}*`;
 
-        await sock.sendMessage(remoteJid, { 
+        await sock.sendMessage(from, { 
             text: dynamicPingPayload 
         }, { 
             quoted: msg 
@@ -51,13 +52,9 @@ async function executeAutonomousCommand(context) {
 
     } catch (commandException) {
         console.error(`[Command Exception] Critical failure inside general/ping.js execution tree:`, commandException.message);
-        
+
         try {
-            await sock.sendMessage(remoteJid, { 
-                text: `\`\`System latency calculation anomaly detected. Framework safe-mode enforced.\`\`` 
-            }, { 
-                quoted: msg 
-            });
+            await ctx.reply(`\`\`System latency calculation anomaly detected. Framework safe-mode enforced.\`\``);
         } catch (secondaryFault) {
             console.error(`[Command Fatal] Emergency reporting pipe severed:`, secondaryFault.message);
         }
