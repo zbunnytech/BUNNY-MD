@@ -7,7 +7,7 @@ import fs from 'fs';
 import { createClient } from '@supabase/supabase-js'; 
 import makeWASocket, { 
     DisconnectReason, 
-    fetchLatestBaileysVersion 
+    BufferJSON
 } from '@whiskeysockets/baileys'; 
 
 // Setup path resolution for ES modules
@@ -43,15 +43,12 @@ app.get('/pair', (req, res) => {
 
 /**
  * Highly Stable Hybrid Authentication state builder for Supabase DB
- * Isolates critical credentials to the Cloud while utilizing In-Memory storage for temporary keys
- * This eliminates 'Couldn't link device' errors by removing database transactional bottlenecks during pairing
+ * Optimized to reconstruct pure Base64 Cloud Master Credits directly in-memory
+ * This mimics the classic simple approach preventing database write bottlenecks and 401 errors
  */
 async function getRemoteAuthState(serverId, botId) {
-    // In-Memory fallback store for high-frequency temporary pre-keys
-    const memoryKeyStore = {};
-
-    // Fetch master credentials directly from Supabase text repository
     let masterCreds = {};
+
     try {
         const { data: res } = await supabase
             .from('bot_sessions')
@@ -62,92 +59,50 @@ async function getRemoteAuthState(serverId, botId) {
             .single();
 
         if (res && res.session_data) {
-            masterCreds = JSON.parse(res.session_data);
+            // Parse using BufferJSON to natively restore keys and buffers properly
+            masterCreds = JSON.parse(res.session_data, BufferJSON.reviver);
         }
     } catch {
         console.log(`[Auth Profile] Generating pristine session mappings for Node: ${botId}`);
     }
 
-    return {
-        state: {
-            creds: masterCreds,
-            keys: {
-                get: async (type, ids) => {
-                    const data = {};
-                    for (const id of ids) {
-                        const storeKey = `${type}-${id}`;
-                        if (memoryKeyStore[storeKey]) {
-                            data[id] = memoryKeyStore[storeKey];
+    // Ephemeral Runtime State Bridge mirroring socket memory architecture
+    const memoryAuthState = {
+        creds: masterCreds,
+        keys: {
+            get: (type, ids) => {
+                const data = {};
+                for (const id of ids) {
+                    data[id] = masterCreds[type]?.[id];
+                }
+                return data;
+            },
+            set: (data) => {
+                for (const type in data) {
+                    for (const id in data[type]) {
+                        if (!masterCreds[type]) masterCreds[type] = {};
+                        if (data[type][id] === null) {
+                            delete masterCreds[type][id];
                         } else {
-                            // Secondary fallback check to cloud if memory is clear
-                            try {
-                                const { data: res } = await supabase
-                                    .from('bot_sessions')
-                                    .select('session_data')
-                                    .eq('server_id', serverId)
-                                    .eq('bot_id', botId)
-                                    .eq('session_key', storeKey)
-                                    .single();
-                                
-                                if (res && res.session_data) {
-                                    data[id] = JSON.parse(res.session_data);
-                                    memoryKeyStore[storeKey] = data[id]; // Cache it
-                                }
-                            } catch {
-                                // Key not initialized yet
-                            }
+                            masterCreds[type][id] = data[type][id];
                         }
-                    }
-                    return data;
-                },
-                set: async (data) => {
-                    const batchUpsertRecords = [];
-
-                    for (const type in data) {
-                        for (const id in data[type]) {
-                            const value = data[type][id];
-                            const storeKey = `${type}-${id}`;
-
-                            if (value === null) {
-                                delete memoryKeyStore[storeKey];
-                                await supabase
-                                    .from('bot_sessions')
-                                    .delete()
-                                    .eq('server_id', serverId)
-                                    .eq('bot_id', botId)
-                                    .eq('session_key', storeKey);
-                            } else {
-                                memoryKeyStore[storeKey] = value;
-                                
-                                // Only backup critical keys to the cloud to prevent network degradation timeouts
-                                if (type === 'app-state-sync-key' || type === 'session') {
-                                    batchUpsertRecords.push({
-                                        server_id: serverId,
-                                        bot_id: botId,
-                                        session_key: storeKey,
-                                        session_data: JSON.stringify(value)
-                                    });
-                                }
-                            }
-                        }
-                    }
-
-                    if (batchUpsertRecords.length > 0) {
-                        await supabase
-                            .from('bot_sessions')
-                            .upsert(batchUpsertRecords);
                     }
                 }
             }
-        },
-        saveCreds: async (creds) => {
+        }
+    };
+
+    return {
+        state: memoryAuthState,
+        saveCreds: async () => {
+            const cloudPackData = JSON.stringify(memoryAuthState.creds, BufferJSON.replacer);
             await supabase
                 .from('bot_sessions')
                 .upsert({
                     server_id: serverId,
                     bot_id: botId,
                     session_key: 'master_creds',
-                    session_data: JSON.stringify(creds)
+                    session_data: cloudPackData
                 });
         }
     };
@@ -184,7 +139,7 @@ async function startBotInstance(botId, isNewConnection = false) {
         config = newConfig;
     }
 
-    // Initialize Baileys connection profile explicitly utilizing v7.0.0-rc11 parameters with full desktop masquerade
+    // Initialize Baileys connection profile explicitly utilizing stable memory structures with desktop masquerade
     const sock = makeWASocket({
         auth: {
             creds: remoteAuth.state.creds,
@@ -202,15 +157,23 @@ async function startBotInstance(botId, isNewConnection = false) {
     const cachePath = path.join(__dirname, 'lib', 'cache.js');
 
     sock.ev.on('creds.update', async () => {
-        await remoteAuth.saveCreds(sock.authState.creds);
+        await remoteAuth.saveCreds();
     });
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
 
         if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log(`[Connection] Instance ${botId} severed. Reconnecting status: ${shouldReconnect}`);
+            const reason = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode;
+            
+            // Bypass internal network self-healing restarts from WhatsApp to avoid instance dropping loops
+            if (reason === 515 || reason === DisconnectReason.restartRequired) {
+                console.log(`[Connection Intercept] Soft hot-restart signaled by network for ${botId}. Safeguarding runtime reference.`);
+                return;
+            }
+
+            const shouldReconnect = reason !== DisconnectReason.loggedOut;
+            console.log(`[Connection] Instance ${botId} severed. Reason: ${reason}. Reconnecting status: ${shouldReconnect}`);
 
             activeInstances.delete(botId);
 
@@ -222,6 +185,12 @@ async function startBotInstance(botId, isNewConnection = false) {
                     .update({ status: 'inactive' })
                     .eq('server_id', SERVER_ID)
                     .eq('bot_id', botId);
+                
+                await supabase
+                    .from('bot_sessions')
+                    .delete()
+                    .eq('server_id', SERVER_ID)
+                    .eq('bot_id', botId);
             }
         } else if (connection === 'open') {
             console.log(`[Success] Instance ${botId} safely linked to WhatsApp Network.`);
@@ -229,6 +198,9 @@ async function startBotInstance(botId, isNewConnection = false) {
             await supabase
                 .from('bot_accounts')
                 .upsert({ server_id: SERVER_ID, bot_id: botId, status: 'active' });
+
+            // Automatically back up initial setup sync to avoid registration gaps
+            await remoteAuth.saveCreds();
 
             // Execution sequence for required channel integration rules
             try {
@@ -358,4 +330,4 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.error('[Unhandled Promise Guard] Rejected promise event mitigated safely at: ', reason);
 });
-                                    
+                        
