@@ -8,8 +8,7 @@ import pino from 'pino'
 import qrcode from 'qrcode'
 import makeWASocket, {
   DisconnectReason,
-  fetchLatestBaileysVersion,
-  Browsers
+  fetchLatestBaileysVersion
 } from '@whiskeysockets/baileys'
 import { getBotSettings, listenSettingsUpdates, supabase } from './lib/supabase.js'
 import { initializeRouter, handleMessages } from './lib/router.js'
@@ -45,7 +44,7 @@ async function useAuthStateSupabase() {
       if (error ||!data) return null
       return JSON.parse(data.data)
     } catch (e) {
-      return null // No session found - return null, not error
+      return null
     }
   }
 
@@ -94,7 +93,6 @@ async function connectToWhatsApp() {
   const { state, saveCreds, clearSession } = await useAuthStateSupabase()
   const { version } = await fetchLatestBaileysVersion()
 
-  // Check if session exists in Supabase
   const hasSession = state.creds?.noiseKey? true : false
 
   if (!hasSession) {
@@ -108,9 +106,7 @@ async function connectToWhatsApp() {
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     auth: state,
-    browser: Browsers.ubuntu('BUNNY MD'),
-    getMessage: async () => ({ conversation: 'BUNNY MD' }),
-    // Prevent aggressive reconnect loops
+    browser: ['BUNNY MD', 'Chrome', '120.0.0'], // FIXED: Baileys 7.0.0-rc.9 compatible
     connectTimeoutMs: 60000,
     defaultQueryTimeoutMs: 0,
     keepAliveIntervalMs: 10000,
@@ -118,7 +114,8 @@ async function connectToWhatsApp() {
     fireInitQueries: true,
     generateHighQualityLinkPreview: true,
     syncFullHistory: false,
-    markOnlineOnConnect: true
+    markOnlineOnConnect: false, // FIXED: Prevents crash
+    retryRequestDelayMs: 250
   })
 
   // 5. HANDLE CONNECTION UPDATES
@@ -149,7 +146,6 @@ async function connectToWhatsApp() {
       io.emit('status', 'Disconnected')
       console.log('Connection closed. Reason:', lastDisconnect?.error?.message)
 
-      // CRITICAL FIX: If logged out, clear session and wait for new QR
       if (statusCode === DisconnectReason.loggedOut) {
         console.log('❌ Logged out. Clearing session from Supabase...')
         await clearSession()
@@ -172,36 +168,35 @@ async function connectToWhatsApp() {
   sock.ev.on('messages.upsert', (m) => {
     handleMessages(sock, m, botSettings)
   })
-
-  // 8. HANDLE PAIR CODE REQUEST FROM FRONTEND
-  io.on('connection', (socket) => {
-    if (qrString &&!isConnected) {
-      qrcode.toDataURL(qrString).then(qrImage => {
-        socket.emit('qr', qrImage)
-      })
-    }
-
-    socket.emit('status', isConnected? 'Connected' : 'Waiting for connection')
-
-    socket.on('request_pair_code', async (phoneNumber) => {
-      if (!sock || isConnected) return
-      try {
-        const code = await sock.requestPairingCode(phoneNumber)
-        socket.emit('pair_code', code)
-        console.log('Pair code sent:', code)
-      } catch (err) {
-        socket.emit('pair_error', 'Failed to generate code. Try QR.')
-        console.log('Pair code error:', err.message)
-      }
-    })
-  })
 }
+
+// 8. HANDLE PAIR CODE REQUEST FROM FRONTEND
+io.on('connection', (socket) => {
+  if (qrString &&!isConnected) {
+    qrcode.toDataURL(qrString).then(qrImage => {
+      socket.emit('qr', qrImage)
+    })
+  }
+
+  socket.emit('status', isConnected? 'Connected' : 'Waiting for connection')
+
+  socket.on('request_pair_code', async (phoneNumber) => {
+    if (!sock || isConnected) return
+    try {
+      const code = await sock.requestPairingCode(phoneNumber)
+      socket.emit('pair_code', code)
+      console.log('Pair code sent:', code)
+    } catch (err) {
+      socket.emit('pair_error', 'Failed to generate code. Try QR.')
+      console.log('Pair code error:', err.message)
+    }
+  })
+})
 
 // 9. CONFIRMATION MESSAGE
 async function sendConfirmationMessage() {
   const s = botSettings
   const imageUrl = 'https://i.ibb.co/Mdg2Fkd/file-00000000f41871fdb744b8a6b7b612fa.png'
-
   const formatBool = (val) => val? 'On' : 'Off'
 
   const caption = `╭─⌈ *${s.botname}* ⌋
@@ -235,10 +230,7 @@ async function sendConfirmationMessage() {
 // 10. MAIN START FUNCTION
 async function startBot() {
   try {
-    // Load router first
     await initializeRouter()
-
-    // Load settings from Supabase
     botSettings = await getBotSettings()
     if (!botSettings) {
       console.error('❌ Failed to load bot settings from Supabase')
@@ -246,16 +238,13 @@ async function startBot() {
     }
     console.log('✅ Initial settings loaded. Prefix:', botSettings.prefix)
 
-    // Listen to Supabase settings changes
     listenSettingsUpdates((newSettings) => {
       botSettings = newSettings
       console.log('🔥 Settings updated live. New prefix:', newSettings.prefix)
     })
 
-    // Start WhatsApp connection
     await connectToWhatsApp()
 
-    // Start Express server
     server.listen(PORT, () => {
       console.log(`BUNNY MD Server running on port ${PORT}`)
       console.log(`Pair page will be available at /pair.html on your Render URL`)
