@@ -1,67 +1,94 @@
-module.exports = { 
-    config: commandConfig, 
-    execute: executeAutonomousCommand 
-};
+// commands/settings/setowner.js
+import { createClient } from '@supabase/supabase-js'
 
-/**
- * Metadata Configuration Block for Dynamic System Menu Generation
- */
-const commandConfig = {
-    name: 'setowner',
-    alias: ['sowner'],
-    category: 'settings',
-    description: 'Update the bot owner number in real-time without restart.'
-};
+export const name = 'setowner'
+export const alias = ['sowner', 'newowner']
+export const category = 'Owner'
+export const desc = 'Update the bot owner number in real-time without restart'
 
-/**
- * Owner Update Command Node
- */
-async function executeAutonomousCommand(ctx) {
-    const { sock, msg, from, state, args, isOwner } = ctx;
+// Supabase client
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+)
 
-    try {
-        if (!isOwner) {
-            return await ctx.reply('Access Denied. Only the owner can change settings.');
-        }
+export default async function setowner(sock, { msg, from, sender }, botSettings) {
+  try {
+    // 1. Owner check - only current owner can change owner
+    const currentOwnerJid = `${botSettings.owner_number}@s.whatsapp.net`
+    if (sender !== currentOwnerJid) {
+      return await sock.sendMessage(from, { 
+        text: '> Access Denied. Only the owner can change settings.' 
+      }, { quoted: msg })
+    }
 
-        const newOwner = args.join(' ').trim().replace(/[^0-9]/g, '');
+    // 2. Get new owner number from args
+    const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
+    const args = body.trim().split(' ').slice(1)
+    const newOwner = args.join(' ').trim().replace(/[^0-9]/g, '')
 
-        if (!newOwner) {
-            return await ctx.reply(
-                `Usage: ${state.prefix}setowner <number>\nExample: ${state.prefix}setowner 255780470905\nNote: Enter number without + or spaces`
-            );
-        }
+    if (!newOwner) {
+      return await sock.sendMessage(from, { 
+        text: `> Usage: ${botSettings.prefix}setowner <number>\n> Example: ${botSettings.prefix}setowner 255780470905\n> Note: Enter number without + or spaces` 
+      }, { quoted: msg })
+    }
 
-        if (newOwner.length < 10) {
-            return await ctx.reply(
-                `Invalid number format. Use international format without +\nExample: 255780470905`
-            );
-        }
+    if (newOwner.length < 10 || newOwner.length > 15) {
+      return await sock.sendMessage(from, { 
+        text: `> Invalid number format. Use international format without +\n> Example: 255780470905` 
+      }, { quoted: msg })
+    }
 
-        const success = await state.updateSetting('owner_number', newOwner);
-        
-        if (!success) {
-            return await ctx.reply('Failed to update owner number. Check database connection.');
-        }
+    // 3. Prevent setting same owner
+    if (newOwner === botSettings.owner_number) {
+      return await sock.sendMessage(from, { 
+        text: `> That number is already set as owner: ${newOwner}` 
+      }, { quoted: msg })
+    }
 
-        await sock.sendMessage(from, {
-            react: { text: '🏵️', key: msg.key }
-        });
+    // 4. Update Supabase b_settings table
+    const { data, error } = await supabase
+      .from('b_settings')
+      .update({ owner_number: newOwner })
+      .eq('id', 'BUNNY_DEFAULT')
+      .select()
 
-        const successPayload = 
+    if (error) {
+      console.error('Supabase update error:', error.message)
+      return await sock.sendMessage(from, { 
+        text: '> Failed to update owner number. Database error.' 
+      }, { quoted: msg })
+    }
+
+    // 5. React + Success message
+    await sock.sendMessage(from, {
+      react: { text: '🏵️', key: msg.key }
+    })
+
+    const successPayload = 
 `╭─⌈ ⚙️ *Settings Updated* ⌋
 │ Owner number changed to: ${newOwner}
 │ Status: Applied instantly
-╰⊷ *${state.botName || 'Bunny MD'}*`;
+│ Old Owner: ${botSettings.owner_number}
+╰⊷ *${botSettings.botname || 'BUNNY MD'}*`
 
-        await sock.sendMessage(from, { 
-            text: successPayload 
-        }, { 
-            quoted: msg 
-        });
+    await sock.sendMessage(from, { 
+      text: successPayload 
+    }, { quoted: msg })
 
-    } catch (commandException) {
-        console.error(`[Command Exception] Critical failure inside settings/setowner.js execution tree:`, commandException.message);
-        await ctx.reply('Failed to update owner number. Check database connection.');
+    // 6. Notify new owner
+    try {
+      await sock.sendMessage(`${newOwner}@s.whatsapp.net`, {
+        text: `> You are now set as the owner of *${botSettings.botname}*.\n> Use ${botSettings.prefix}menu to see owner commands.`
+      })
+    } catch (e) {
+      console.log('Failed to notify new owner:', e.message)
     }
+
+  } catch (commandException) {
+    console.error(`[SETOWNER ERROR]`, commandException.message)
+    await sock.sendMessage(from, { 
+      text: '> Failed to update owner number. Check database connection.' 
+    }, { quoted: msg })
+  }
 }
