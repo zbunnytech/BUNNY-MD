@@ -12,15 +12,14 @@ import makeWASocket, {
   Browsers
 } from '@whiskeysockets/baileys'
 import { getBotSettings, listenSettingsUpdates, supabase } from './lib/supabase.js'
-import { handleMessages } from './lib/router.js'
+import { initializeRouter, handleMessages } from './lib/router.js'
 import 'dotenv/config'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
-// 1. GLOBAL STATE - Load live settings from Supabase
-global.botSettings = await getBotSettings()
-console.log('✅ Initial settings loaded. Prefix:', global.botSettings.prefix)
+// 1. GLOBAL STATE - Will be loaded in startBot
+let botSettings = null
 
 // 2. EXPRESS + SOCKET.IO SETUP for /pair page + UptimeRobot
 const app = express()
@@ -79,7 +78,7 @@ async function connectToWhatsApp() {
       console.log('Connection closed, reconnecting:', shouldReconnect)
 
       if (shouldReconnect) {
-        connectToWhatsApp()
+        setTimeout(() => connectToWhatsApp(), 3000)
       } else {
         console.log('Logged out. Delete session from b_sessions and restart')
       }
@@ -91,7 +90,7 @@ async function connectToWhatsApp() {
 
   // 6. HANDLE ALL INCOMING MESSAGES - ROUTER.JS TAKES OVER
   sock.ev.on('messages.upsert', (m) => {
-    handleMessages(sock, m, global.botSettings)
+    handleMessages(sock, m, botSettings)
   })
 
   // 7. HANDLE PAIR CODE REQUEST FROM FRONTEND
@@ -160,7 +159,7 @@ async function useAuthStateSupabase() {
 
 // 9. CONFIRMATION MESSAGE - Shows ALL settings from Supabase with On/Off status
 async function sendConfirmationMessage() {
-  const s = global.botSettings
+  const s = botSettings
   const imageUrl = 'https://i.ibb.co/Mdg2Fkd/file-00000000f41871fdb744b8a6b7b612fa.png'
 
   const formatBool = (val) => val? 'On' : 'Off'
@@ -193,15 +192,40 @@ async function sendConfirmationMessage() {
   }
 }
 
-// 10. LISTEN TO SUPABASE SETTINGS CHANGES - Hot reload without restart
-listenSettingsUpdates((newSettings) => {
-  global.botSettings = newSettings
-  console.log('🔥 Settings updated live. New prefix:', newSettings.prefix)
-})
+// 10. MAIN START FUNCTION - Fixes all top-level await issues
+async function startBot() {
+  try {
+    // Load router first - loads all commands
+    await initializeRouter()
+
+    // Load settings from Supabase
+    botSettings = await getBotSettings()
+    if (!botSettings) {
+      console.error('❌ Failed to load bot settings from Supabase')
+      process.exit(1)
+    }
+    console.log('✅ Initial settings loaded. Prefix:', botSettings.prefix)
+
+    // Listen to Supabase settings changes - Hot reload without restart
+    listenSettingsUpdates((newSettings) => {
+      botSettings = newSettings
+      console.log('🔥 Settings updated live. New prefix:', newSettings.prefix)
+    })
+
+    // Start WhatsApp connection
+    await connectToWhatsApp()
+
+    // Start Express server
+    server.listen(PORT, () => {
+      console.log(`BUNNY MD Server running on port ${PORT}`)
+      console.log(`Pair page will be available at /pair on your Render URL`)
+    })
+
+  } catch (err) {
+    console.error('Bot failed to start:', err)
+    process.exit(1)
+  }
+}
 
 // 11. START EVERYTHING
-connectToWhatsApp()
-server.listen(PORT, () => {
-  console.log(`BUNNY MD Server running on port ${PORT}`)
-  console.log(`Pair page will be available at /pair on your Render URL`)
-})
+startBot()
