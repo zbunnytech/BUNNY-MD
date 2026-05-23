@@ -1,59 +1,75 @@
-module.exports = { 
-    config: commandConfig, 
-    execute: executeAutonomousCommand 
-};
+// commands/settings/setbotname.js
+import { createClient } from '@supabase/supabase-js'
 
-/**
- * Metadata Configuration Block for Dynamic System Menu Generation
- */
-const commandConfig = {
-    name: 'setname',
-    alias: ['botname'],
-    category: 'settings',
-    description: 'Update the bot name in real-time without restart.'
-};
+export const name = 'setbotname'
+export const alias = ['setname', 'botname']
+export const category = 'Owner'
+export const desc = 'Update the bot name in real-time without restart'
 
-/**
- * Bot Name Update Command Node
- */
-async function executeAutonomousCommand(ctx) {
-    const { sock, msg, from, state, args, isOwner } = ctx;
+// Supabase client
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+)
 
-    try {
-        if (!isOwner) {
-            return await ctx.reply('Access Denied. Only the owner can change settings.');
-        }
+export default async function setbotname(sock, { msg, from, sender, args }, botSettings) {
+  try {
+    // 1. Owner check
+    const ownerJid = `${botSettings.owner_number}@s.whatsapp.net`
+    if (sender !== ownerJid) {
+      return await sock.sendMessage(from, { 
+        text: '> Access Denied. Only the owner can change settings.' 
+      }, { quoted: msg })
+    }
 
-        const newName = args.join(' ').trim();
-        if (!newName) {
-            return await ctx.reply(`Usage: ${state.prefix}setname <new_name>\nExample: ${state.prefix}setname Bunny Pro`);
-        }
+    // 2. Get new name
+    const newName = args.join(' ').trim()
+    if (!newName) {
+      return await sock.sendMessage(from, { 
+        text: `> Usage: ${botSettings.prefix}setbotname <new_name>\n> Example: ${botSettings.prefix}setbotname BUNNY PRO` 
+      }, { quoted: msg })
+    }
 
-        // Update via StateManager - it handles Supabase + realtime
-        const success = await state.updateSetting('bot_name', newName);
-        
-        if (!success) {
-            return await ctx.reply('Failed to update bot name. Check database connection.');
-        }
+    if (newName.length > 30) {
+      return await sock.sendMessage(from, { 
+        text: '> Bot name too long. Max 30 characters.' 
+      }, { quoted: msg })
+    }
 
-        await sock.sendMessage(from, {
-            react: { text: '🐉', key: msg.key }
-        });
+    // 3. Update Supabase b_settings table
+    const { data, error } = await supabase
+      .from('b_settings')
+      .update({ botname: newName })
+      .eq('id', 'BUNNY_DEFAULT')
+      .select()
 
-        const successPayload = 
+    if (error) {
+      console.error('Supabase update error:', error.message)
+      return await sock.sendMessage(from, { 
+        text: '> Failed to update bot name. Database error.' 
+      }, { quoted: msg })
+    }
+
+    // 4. React + Success message
+    await sock.sendMessage(from, {
+      react: { text: '🐉', key: msg.key }
+    })
+
+    const successPayload = 
 `╭─⌈ ⚙️ *Settings Updated* ⌋
 │ Bot name changed to: ${newName}
 │ Status: Applied instantly
-╰⊷ *${newName}*`;
+│ Database: Synced
+╰⊷ *${newName}*`
 
-        await sock.sendMessage(from, { 
-            text: successPayload 
-        }, { 
-            quoted: msg 
-        });
+    await sock.sendMessage(from, { 
+      text: successPayload 
+    }, { quoted: msg })
 
-    } catch (commandException) {
-        console.error(`[Command Exception] Critical failure inside settings/setname.js execution tree:`, commandException.message);
-        await ctx.reply('Failed to update bot name. Check database connection.');
-    }
+  } catch (commandException) {
+    console.error(`[SETBOTNAME ERROR]`, commandException.message)
+    await sock.sendMessage(from, { 
+      text: '> Failed to update bot name. Check database connection.' 
+    }, { quoted: msg })
+  }
 }
