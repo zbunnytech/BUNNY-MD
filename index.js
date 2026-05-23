@@ -6,10 +6,8 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import pino from 'pino'
 import qrcode from 'qrcode'
-import makeWASocket, {
-  DisconnectReason,
-  fetchLatestBaileysVersion
-} from '@whiskeysockets/baileys'
+import pkg from '@whiskeysockets/baileys' // BADILISHA HII
+const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion } = pkg // NA HII
 import { getBotSettings, listenSettingsUpdates, supabase } from './lib/supabase.js'
 import { initializeRouter, handleMessages } from './lib/router.js'
 import 'dotenv/config'
@@ -106,7 +104,7 @@ async function connectToWhatsApp() {
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     auth: state,
-    browser: ['BUNNY MD', 'Chrome', '120.0.0'], // FIXED: Baileys 7.0.0-rc.9 compatible
+    browser: ['BUNNY MD', 'Chrome', '120.0.0'],
     connectTimeoutMs: 60000,
     defaultQueryTimeoutMs: 0,
     keepAliveIntervalMs: 10000,
@@ -114,7 +112,7 @@ async function connectToWhatsApp() {
     fireInitQueries: true,
     generateHighQualityLinkPreview: true,
     syncFullHistory: false,
-    markOnlineOnConnect: false, // FIXED: Prevents crash
+    markOnlineOnConnect: false,
     retryRequestDelayMs: 250
   })
 
