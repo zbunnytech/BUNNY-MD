@@ -12,6 +12,7 @@ import makeWASocket, {
   Browsers
 } from '@whiskeysockets/baileys'
 import { getBotSettings, listenSettingsUpdates, supabase } from './lib/supabase.js'
+import { handleMessages } from './lib/router.js'
 import 'dotenv/config'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -56,7 +57,6 @@ async function connectToWhatsApp() {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update
 
-    // A. QR CODE LOGIC - Send to /pair page via Socket.io
     if (qr) {
       qrString = qr
       const qrImage = await qrcode.toDataURL(qr)
@@ -65,7 +65,6 @@ async function connectToWhatsApp() {
       console.log('New QR generated')
     }
 
-    // B. CONNECTION OPENED - Bot is online
     if (connection === 'open') {
       isConnected = true
       io.emit('status', 'Connected')
@@ -73,7 +72,6 @@ async function connectToWhatsApp() {
       await sendConfirmationMessage()
     }
 
-    // C. CONNECTION CLOSED - Handle reconnect
     if (connection === 'close') {
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut
       isConnected = false
@@ -91,7 +89,12 @@ async function connectToWhatsApp() {
   // 5. SAVE CREDS WHEN UPDATED
   sock.ev.on('creds.update', saveCreds)
 
-  // 6. HANDLE PAIR CODE REQUEST FROM FRONTEND
+  // 6. HANDLE ALL INCOMING MESSAGES - ROUTER.JS TAKES OVER
+  sock.ev.on('messages.upsert', (m) => {
+    handleMessages(sock, m, global.botSettings)
+  })
+
+  // 7. HANDLE PAIR CODE REQUEST FROM FRONTEND
   io.on('connection', (socket) => {
     if (qrString &&!isConnected) {
       qrcode.toDataURL(qrString).then(qrImage => {
@@ -115,7 +118,7 @@ async function connectToWhatsApp() {
   })
 }
 
-// 7. SUPABASE AUTH STATE - Save Baileys session to b_sessions table
+// 8. SUPABASE AUTH STATE - Save Baileys session to b_sessions table
 async function useAuthStateSupabase() {
   const readData = async (id) => {
     const { data } = await supabase.from('b_sessions').select('data').eq('id', id).single()
@@ -155,7 +158,7 @@ async function useAuthStateSupabase() {
   }
 }
 
-// 8. CONFIRMATION MESSAGE - Shows ALL settings from Supabase with On/Off status
+// 9. CONFIRMATION MESSAGE - Shows ALL settings from Supabase with On/Off status
 async function sendConfirmationMessage() {
   const s = global.botSettings
   const imageUrl = 'https://i.ibb.co/Mdg2Fkd/file-00000000f41871fdb744b8a6b7b612fa.png'
@@ -190,13 +193,13 @@ async function sendConfirmationMessage() {
   }
 }
 
-// 9. LISTEN TO SUPABASE SETTINGS CHANGES - Hot reload without restart
+// 10. LISTEN TO SUPABASE SETTINGS CHANGES - Hot reload without restart
 listenSettingsUpdates((newSettings) => {
   global.botSettings = newSettings
   console.log('🔥 Settings updated live. New prefix:', newSettings.prefix)
 })
 
-// 10. START EVERYTHING
+// 11. START EVERYTHING
 connectToWhatsApp()
 server.listen(PORT, () => {
   console.log(`BUNNY MD Server running on port ${PORT}`)
