@@ -1,151 +1,204 @@
-require("dotenv").config();
-const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require("@whiskeysockets/baileys");
-const pino = require("pino");
-const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
-const path = require("path");
+// index.js
+import express from 'express'
+import { createServer } from 'http'
+import { Server } from 'socket.io'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
+import pino from 'pino'
+import qrcode from 'qrcode'
+import makeWASocket, {
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  Browsers
+} from '@whiskeysockets/baileys'
+import { getBotSettings, listenSettingsUpdates, supabase } from './lib/supabase.js'
+import 'dotenv/config'
 
-const StateManager = require("./core/state");
-const { loadCommands, loadObservers } = require("./core/loader");
-const { routeMessage } = require("./core/router");
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
-const PORT = process.env.PORT || 10000;
+// 1. GLOBAL STATE - Load live settings from Supabase
+global.botSettings = await getBotSettings()
+console.log('✅ Initial settings loaded. Prefix:', global.botSettings.prefix)
 
-// Static files
-app.use(express.static(path.join(__dirname, "public")));
-app.get("/", (_, res) => res.redirect("/pair"));
-app.get("/pair", (_, res) => res.sendFile(path.join(__dirname, "public", "pair.html")));
+// 2. EXPRESS + SOCKET.IO SETUP for /pair page + UptimeRobot
+const app = express()
+const server = createServer(app)
+const io = new Server(server, { cors: { origin: "*" } })
+const PORT = process.env.PORT || 3000
 
-// Global state
-const state = new StateManager();
-let sock = null;
-let isStarting = false;
+app.use(express.static(join(__dirname, 'public')))
+app.use(express.json())
 
-// Load commands and observers once
-let commands = new Map();
-let observers = [];
-let aliases = new Map();
+app.get('/', (req, res) => {
+  res.send('BUNNY MD is running 🐰')
+})
 
-async function startEngine() {
-  if (isStarting || state.isConnected) return;
-  isStarting = true;
+// 3. WHATSAPP BOT CORE
+let sock
+let qrString = ''
+let isConnected = false
 
-  try {
-    await state.loadSettings();
-    commands = loadCommands();
-    observers = loadObservers();
-    aliases = buildAliases(commands);
+async function connectToWhatsApp() {
+  const { state, saveCreds } = await useAuthStateSupabase()
+  const { version } = await fetchLatestBaileysVersion()
 
-    const { state: authState, saveCreds } = await useMultiFileAuthState("./session");
-    const { version } = await fetchLatestBaileysVersion();
+  sock = makeWASocket({
+    version,
+    logger: pino({ level: 'silent' }),
+    printQRInTerminal: false,
+    auth: state,
+    browser: Browsers.ubuntu('BUNNY MD'),
+    getMessage: async () => ({ conversation: 'BUNNY MD' })
+  })
 
-    sock = makeWASocket({
-      version,
-      logger: pino({ level: "silent" }),
-      auth: authState,
-      browser: [state.botName, "Chrome", "20.0.0"],
-      markOnlineOnConnect: false,
-      printQRInTerminal: false
-    });
+  // 4. HANDLE CONNECTION UPDATES - QR, Pair Code, Online
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update
 
-    // Message handler
-    sock.ev.on("messages.upsert", async ({ messages }) => {
-      const m = messages[0];
-      if (!m?.message) return;
+    // A. QR CODE LOGIC - Send to /pair page via Socket.io
+    if (qr) {
+      qrString = qr
+      const qrImage = await qrcode.toDataURL(qr)
+      io.emit('qr', qrImage)
+      io.emit('status', 'Scan QR or use Pair Code')
+      console.log('New QR generated')
+    }
 
-      await routeMessage(m, sock, { commands, aliases, observers, state });
-    });
+    // B. CONNECTION OPENED - Bot is online
+    if (connection === 'open') {
+      isConnected = true
+      io.emit('status', 'Connected')
+      console.log('WhatsApp connected successfully')
+      await sendConfirmationMessage()
+    }
 
-    // Connection handler
-    sock.ev.on("connection.update", async (update) => {
-      const { connection, lastDisconnect, qr } = update;
+    // C. CONNECTION CLOSED - Handle reconnect
+    if (connection === 'close') {
+      const shouldReconnect = lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut
+      isConnected = false
+      io.emit('status', 'Disconnected')
+      console.log('Connection closed, reconnecting:', shouldReconnect)
 
-      if (qr) {
-        io.emit("qr", qr);
-        io.emit("qrCodeResponse", { qr });
-      }
-
-      if (connection === "close") {
-        state.isConnected = false;
-        const reason = lastDisconnect?.error?.output?.statusCode;
-        console.log(`[Connection Closed] Reason: ${reason}`);
-
-        if (reason!== DisconnectReason.loggedOut) {
-          setTimeout(() => startEngine(), 5000);
-        } else {
-          console.log("Logged out. Delete./session and re-pair.");
-        }
-        isStarting = false;
-      }
-
-      if (connection === "open") {
-        state.isConnected = true;
-        isStarting = false;
-        console.log(`✅ ${state.botName} Connected`);
-
-        io.emit("connected");
-        io.emit("pairingSuccess");
-
-        // Send onboarding once
-        if (!state.onboardingSent) {
-          state.onboardingSent = true;
-          await sendOnboarding(sock);
-        }
-      }
-    });
-
-    sock.ev.on("creds.update", saveCreds);
-
-  } catch (err) {
-    console.error("Engine start error:", err);
-    isStarting = false;
-    setTimeout(() => startEngine(), 5000);
-  }
-}
-
-function buildAliases(commands) {
-  const aliasMap = new Map();
-  for (const [name, cmd] of commands) {
-    if (cmd.config?.alias && Array.isArray(cmd.config.alias)) {
-      for (const a of cmd.config.alias) {
-        aliasMap.set(a, name);
+      if (shouldReconnect) {
+        connectToWhatsApp()
+      } else {
+        console.log('Logged out. Delete session from b_sessions and restart')
       }
     }
-  }
-  return aliasMap;
+  })
+
+  // 5. SAVE CREDS WHEN UPDATED
+  sock.ev.on('creds.update', saveCreds)
+
+  // 6. HANDLE PAIR CODE REQUEST FROM FRONTEND
+  io.on('connection', (socket) => {
+    if (qrString &&!isConnected) {
+      qrcode.toDataURL(qrString).then(qrImage => {
+        socket.emit('qr', qrImage)
+      })
+    }
+
+    socket.emit('status', isConnected? 'Connected' : 'Waiting for connection')
+
+    socket.on('request_pair_code', async (phoneNumber) => {
+      if (!sock || isConnected) return
+      try {
+        const code = await sock.requestPairingCode(phoneNumber)
+        socket.emit('pair_code', code)
+        console.log('Pair code sent:', code)
+      } catch (err) {
+        socket.emit('pair_error', 'Failed to generate code. Try QR.')
+        console.log('Pair code error:', err.message)
+      }
+    })
+  })
 }
 
-async function sendOnboarding(sock) {
-  try {
-    const userNum = sock.user.id.split(":")[0];
-    const msg =
-`╭─⌈ *${state.botName}* ⌋
+// 7. SUPABASE AUTH STATE - Save Baileys session to b_sessions table
+async function useAuthStateSupabase() {
+  const readData = async (id) => {
+    const { data } = await supabase.from('b_sessions').select('data').eq('id', id).single()
+    return data? JSON.parse(data.data) : null
+  }
+
+  const writeData = async (id, value) => {
+    await supabase.from('b_sessions').upsert({ id, data: JSON.stringify(value) })
+  }
+
+  const creds = await readData('creds') || {}
+
+  return {
+    state: {
+      creds,
+      keys: {
+        get: async (type, ids) => {
+          const data = {}
+          for (const id of ids) {
+            const value = await readData(`${type}-${id}`)
+            if (value) data[id] = value
+          }
+          return data
+        },
+        set: async (data) => {
+          for (const category in data) {
+            for (const id in data[category]) {
+              await writeData(`${category}-${id}`, data[category][id])
+            }
+          }
+        }
+      }
+    },
+    saveCreds: async () => {
+      await writeData('creds', creds)
+    }
+  }
+}
+
+// 8. CONFIRMATION MESSAGE - Shows ALL settings from Supabase with On/Off status
+async function sendConfirmationMessage() {
+  const s = global.botSettings
+  const imageUrl = 'https://i.ibb.co/Mdg2Fkd/file-00000000f41871fdb744b8a6b7b612fa.png'
+
+  const formatBool = (val) => val? 'On' : 'Off'
+
+  const caption = `╭─⌈ *${s.botname}* ⌋
 │
 │ Hello ${sock.user.name || "User"}, bot is online.
-│ Prefix: ${state.prefix}
-│ Owner: ${state.ownerName}
+│ Owner: ${s.owner_name}
+│ Number: ${s.owner_number}
+│ Prefix: ${s.prefix}
 │
-╰⊷ Type ${state.prefix}menu to start`;
+│ *SYSTEM STATUS*
+│ Public Mode: ${formatBool(s.public_mode)}
+│ Anti-Link: ${formatBool(s.antilink)}
+│ Anti-Spam: ${formatBool(s.antispam)}
+│ Auto-Read: ${formatBool(s.autoread)}
+│ Auto-Typing: ${formatBool(s.autotyping)}
+│ View Status: ${formatBool(s.autoviewstatus)}
+│
+╰⊷ Type ${s.prefix}menu to start`
 
-    await sock.sendMessage(`${userNum}@s.whatsapp.net`, { text: msg });
-  } catch (e) {
-    console.error("Onboarding error:", e.message);
+  try {
+    await sock.sendMessage(`${s.owner_number}@s.whatsapp.net`, {
+      image: { url: imageUrl },
+      caption: caption
+    })
+    console.log('Confirmation message sent to owner')
+  } catch (err) {
+    console.log('Failed to send confirmation:', err.message)
   }
 }
 
-// Bind pairing socket
-require("./socket/pairing")(io, startEngine, state);
+// 9. LISTEN TO SUPABASE SETTINGS CHANGES - Hot reload without restart
+listenSettingsUpdates((newSettings) => {
+  global.botSettings = newSettings
+  console.log('🔥 Settings updated live. New prefix:', newSettings.prefix)
+})
 
-// Start server
+// 10. START EVERYTHING
+connectToWhatsApp()
 server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  startEngine();
-});
-
-// Crash protection
-process.on("uncaughtException", err => console.error("Uncaught:", err));
-process.on("unhandledRejection", err => console.error("Unhandled:", err));
+  console.log(`BUNNY MD Server running on port ${PORT}`)
+  console.log(`Pair page will be available at /pair on your Render URL`)
+})
