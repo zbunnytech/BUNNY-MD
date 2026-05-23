@@ -1,16 +1,10 @@
 // commands/settings/setowner.js
-import { createClient } from '@supabase/supabase-js'
+import { supabase } from '../../lib/supabase.js'
 
 export const name = 'setowner'
 export const alias = ['sowner', 'newowner']
 export const category = 'Owner'
 export const desc = 'Update the bot owner number in real-time without restart'
-
-// Supabase client
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-)
 
 export default async function setowner(sock, { msg, from, sender }, botSettings) {
   try {
